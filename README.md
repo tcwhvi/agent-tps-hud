@@ -59,8 +59,6 @@ TPS = Σ(输出 token + 思考 token) / Σ(模型请求耗时)
 
 Windows 10/11，Python 3.10+（Tkinter 随 Python 自带），无第三方依赖。不想用 Release 里的 exe 时：
 
-不想装 Python 的话，[Releases](https://github.com/tcwhvi/agent-tps-hud/releases) 里有打包好的 `agent-tps-hud.exe`，下载即用。
-
 ```bat
 start_tps_overlay.bat
 ```

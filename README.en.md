@@ -52,8 +52,6 @@ Colors: Z blue, Q purple, W yellow, M green.
 
 Windows 10/11, Python 3.10+ (Tkinter included), no third-party dependencies. Use this if you would rather not run the release binary:
 
-If you'd rather not install Python, a prebuilt `agent-tps-hud.exe` is available in [Releases](https://github.com/tcwhvi/agent-tps-hud/releases).
-
 ```bat
 start_tps_overlay.bat
 ```
