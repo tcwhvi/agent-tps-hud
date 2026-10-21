@@ -1,5 +1,7 @@
 # Agent TPS HUD
 
+[![Release](https://img.shields.io/github/v/release/tcwhvi/agent-tps-hud)](https://github.com/tcwhvi/agent-tps-hud/releases)
+
 > A tiny always-on-top Windows HUD that shows output tokens/sec for ZCode, Qoder, WorkBuddy and MiMo Desktop — locally, without proxies or API keys.
 
 [中文](README.md)
@@ -49,6 +51,8 @@ Colors: Z blue, Q purple, W yellow, M green.
 ## Run from source
 
 Windows 10/11, Python 3.10+ (Tkinter included), no third-party dependencies. Use this if you would rather not run the release binary:
+
+If you'd rather not install Python, a prebuilt `agent-tps-hud.exe` is available in [Releases](https://github.com/tcwhvi/agent-tps-hud/releases).
 
 ```bat
 start_tps_overlay.bat
