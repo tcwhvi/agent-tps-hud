@@ -107,7 +107,7 @@ python tps_overlay.py --once
 
 - **MiMo**：`output + reasoning` 和步骤耗时来自 `step-finish`，最接近真值；
 - **ZCode / WorkBuddy**：直接使用 provider 返回的 output token；该字段已包含思考 token，不再额外估算，避免重复计数；
-- **Qoder**：CLI transcript 不返回 usage，按 thinking + 正文文字估算，显示 `≈`，只能看趋势；IDE 会话可从 `chat_message.token_info` 读到 completion token 真值，标题从 `chat_session` 取；CLI 会话名取首条用户消息的前 40 字；
+- **Qoder**：CLI / Desktop 的 transcript 不返回 usage，按 thinking + 正文文字估算，显示 `≈`，只能看趋势；IDE 会话可从 `chat_message.token_info` 读到 completion / prompt / cached token 真值，标题从 `chat_session` 取；CLI 会话名取首条用户消息的前 40 字。两个库可能同时存在，只有 IDE 库里的会话才是真值；
 - 不同厂商的 tokenizer / 计费口径不同，不要把它当作官方 benchmark；同一个模型下比较更有意义。
 
 ## 隐私

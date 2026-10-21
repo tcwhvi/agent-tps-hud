@@ -98,7 +98,7 @@ Short left-click or right-click the HUD to inspect historical sessions:
 
 - MiMo is the most accurate (exact step tokens).
 - ZCode / WorkBuddy use the provider's output token count directly; it already includes thinking tokens, so reasoning is not added twice.
-- Qoder CLI transcripts have no usage tokens, so their value is an estimate prefixed with `≈`. Qoder IDE sessions can use exact `chat_message.token_info` completion tokens and `chat_session` titles. CLI session names use the first 40 characters of the first user message and stay local.
+- Qoder CLI / Desktop transcripts have no usage tokens, so their value is an estimate prefixed with `≈`. Qoder IDE sessions can use exact `chat_message.token_info` completion / prompt / cached tokens and `chat_session` titles — both databases can exist at once, and only the IDE-backed sessions are exact. CLI session names use the first 40 characters of the first user message and stay local.
 - Tokenizers and billing rules differ across vendors. Use this for trends and same-model comparisons, not as an official benchmark.
 - Read-only local metadata only. No prompts/responses are stored or uploaded. No network requests. Qoder reads text lengths for its estimate, truncates the first user message into a local-only session name, or reads the IDE's own title; none is written to disk. SQLite reads fall back to a temporary snapshot when the source database is write-locked.
 
