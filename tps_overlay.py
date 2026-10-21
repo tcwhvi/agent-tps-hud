@@ -1388,6 +1388,7 @@ def once() -> None:
         print(json.dumps(r.__dict__, ensure_ascii=False))
 
 
+APP_VERSION = "0.3.1"
 BG = "#0f1117"
 BORDER = "#2a2f3a"
 TEXT = "#e6e8ee"
@@ -1411,7 +1412,7 @@ CLIENT_COLORS = {
 class Overlay:
     def __init__(self) -> None:
         self.root = tk.Tk()
-        self.root.title("TPS Monitor")
+        self.root.title(f"TPS Monitor {APP_VERSION}")
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
         self.root.attributes("-alpha", 0.96)
@@ -1487,7 +1488,7 @@ class Overlay:
         header.pack_propagate(False)
         tk.Label(
             header,
-            text="TPS",
+            text=f"TPS {APP_VERSION}",
             bg=BG,
             fg="#6b7280",
             font=("Consolas", 7, "bold"),
@@ -1739,7 +1740,7 @@ class Overlay:
         head.pack(fill="x", padx=10, pady=(7, 4))
         tk.Label(
             head,
-            text="TOKEN STATS",
+            text=f"TOKEN STATS {APP_VERSION}",
             bg=BG,
             fg=SUBTLE,
             font=("Consolas", 8, "bold"),
@@ -1816,22 +1817,30 @@ class Overlay:
             label.grid(row=0, column=index, sticky="ew", padx=(0, 4))
         columns.columnconfigure(2, weight=1)
 
+        self.popup_note = tk.Label(
+            outer,
+            text="",
+            bg=BG,
+            fg="#596173",
+            font=("Microsoft YaHei UI", 7),
+            anchor="w",
+        )
+        self.popup_note.pack(side="bottom", fill="x", padx=10, pady=(2, 6))
+
         wrap = tk.Frame(outer, bg=BG)
         wrap.pack(fill="both", expand=True, padx=(10, 4), pady=(0, 0))
-        self.popup_canvas = tk.Canvas(wrap, bg=BG, highlightthickness=0)
-        scroll = tk.Scrollbar(
-            wrap,
-            orient="vertical",
-            command=self.popup_canvas.yview,
-            width=8,
-            bg=BG,
-            troughcolor=BG,
-            bd=0,
-            relief="flat",
+        self.popup_canvas = tk.Canvas(
+            wrap, bg=BG, highlightthickness=0, yscrollincrement=16
         )
-        self.popup_canvas.configure(yscrollcommand=scroll.set)
+        self.popup_scrollbar = tk.Canvas(
+            wrap, width=5, bg=BG, highlightthickness=0, bd=0
+        )
+        self.popup_canvas.configure(yscrollcommand=self._update_scrollbar)
         self.popup_canvas.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
+        self.popup_scrollbar.pack(side="right", fill="y", padx=(2, 0))
+        self.popup_scrollbar.bind("<Button-1>", self._scrollbar_jump)
+        self.popup_scrollbar.bind("<B1-Motion>", self._scrollbar_jump)
+        self.popup_scrollbar.bind("<Configure>", lambda _e: self._update_scrollbar())
         self.popup_rows = tk.Frame(self.popup_canvas, bg=BG)
         self.popup_canvas_window = self.popup_canvas.create_window(
             (0, 0), window=self.popup_rows, anchor="nw"
@@ -1848,23 +1857,8 @@ class Overlay:
                 self.popup_canvas_window, width=e.width
             ),
         )
-        win.bind(
-            "<MouseWheel>",
-            lambda e: self.popup_canvas.yview_scroll(
-                int(-e.delta / 120), "units"
-            ),
-        )
+        win.bind("<MouseWheel>", self._popup_wheel)
         win.bind("<Escape>", lambda _e: self._close_popup())
-
-        self.popup_note = tk.Label(
-            outer,
-            text="",
-            bg=BG,
-            fg="#596173",
-            font=("Microsoft YaHei UI", 7),
-            anchor="w",
-        )
-        self.popup_note.pack(fill="x", padx=10, pady=(2, 6))
 
         width, height = 430, 392
         self.root.update_idletasks()
@@ -1880,6 +1874,62 @@ class Overlay:
         self._set_period("today", render=False)
         self._ensure_data("today")
         self.root.after(30000, self._auto_refresh_tick)
+
+    def _update_scrollbar(self, first=None, last=None) -> None:
+        if self.popup is None or not hasattr(self, "popup_scrollbar"):
+            return
+        scrollbar = self.popup_scrollbar
+        if not scrollbar.winfo_exists():
+            return
+        if first is None or last is None:
+            first, last = self.popup_canvas.yview()
+        else:
+            first, last = float(first), float(last)
+        scrollbar.delete("all")
+        if last - first >= 0.999:
+            return
+        height = max(1, scrollbar.winfo_height())
+        top = 2 + first * height
+        bottom = last * height - 2
+        if bottom - top < 14:
+            middle = (top + bottom) / 2
+            top, bottom = middle - 7, middle + 7
+        scrollbar.create_rectangle(
+            1,
+            max(1, top),
+            4,
+            min(height - 1, bottom),
+            fill="#4a5264",
+            outline="",
+        )
+
+    def _scrollbar_jump(self, event) -> None:
+        if self.popup is None:
+            return
+        height = max(1, self.popup_scrollbar.winfo_height())
+        fraction = max(0.0, min(1.0, event.y / height))
+        self.popup_canvas.yview_moveto(fraction)
+        self._update_scrollbar()
+
+    def _popup_wheel(self, event):
+        if self.popup is None:
+            return "break"
+        first, last = self.popup_canvas.yview()
+        if last - first >= 0.999:
+            return "break"
+        if event.delta > 0:
+            if first <= 0:
+                return "break"
+            step = -1
+        elif event.delta < 0:
+            if last >= 1:
+                return "break"
+            step = 1
+        else:
+            return "break"
+        self.popup_canvas.yview_scroll(step, "units")
+        self._update_scrollbar()
+        return "break"
 
     def _summary_card(self, parent, caption, color, size):
         card = tk.Frame(parent, bg=BG)
@@ -2017,7 +2067,7 @@ class Overlay:
             else "—"
         )
         self.popup_note.configure(
-            text=f"{min(len(visible), 80)} 个会话 · 更新 {stamp} · Qoder 估算"
+            text=f"{min(len(visible), 80)} 个会话 · 更新 {stamp} · Qoder IDE 真值 / CLI 估算"
         )
 
         self._clear_rows()
@@ -2067,6 +2117,7 @@ class Overlay:
         for child in self.popup_rows.winfo_children():
             child.destroy()
         self.popup_canvas.yview_moveto(0)
+        self._update_scrollbar()
 
     def _close_popup(self) -> None:
         self.popup_token += 1
