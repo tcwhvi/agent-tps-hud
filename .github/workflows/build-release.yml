@@ -1,0 +1,44 @@
+name: Build Windows executable
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to attach the executable to
+        required: true
+        default: v0.1.0
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller
+        run: python -m pip install pyinstaller
+
+      - name: Run parser tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build one-file executable
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name agent-tps-hud tps_overlay.py
+
+      - name: Upload executable to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: dist/agent-tps-hud.exe
+          fail_on_unmatched_files: true

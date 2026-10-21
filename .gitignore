@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+overlay.png
+start_qoder_with_token_usage.bat
+.idea/
+.vscode/
+build/
+dist/
+*.spec
