@@ -4,11 +4,21 @@
 
 [中文](README.md)
 
-![screenshot](docs/screenshot.png)
+![Agent TPS HUD](docs/hero.png)
+
+## Download and run
+
+Grab `agent-tps-hud.exe` from [Releases](https://github.com/tcwhvi/agent-tps-hud/releases/latest) and double-click it. No Python, no configuration.
+
+It only reads local session data and makes no network requests; closing the window quits. If SmartScreen says "Windows protected your PC" on first launch, that is because the binary has no code-signing certificate (individual projects can't get one) — choose "More info → Run anyway". The source is right here, so `pythonw tps_overlay.py` works too.
 
 ## What it does
 
 It reads local session data (SQLite / JSONL), shows the latest completed turn's TPS for each agent, and keeps a small sparkline of recent turns. It does not modify model settings, intercept traffic, or require API keys.
+
+The HUD itself is 190 × 128:
+
+![Native size](docs/screenshot.png)
 
 ## Metric
 
@@ -36,9 +46,9 @@ TPS = sum(output + thinking tokens) / sum(model request duration)
 
 Colors: Z blue, Q purple, W yellow, M green.
 
-## Run
+## Run from source
 
-Windows 10/11, Python 3.10+ (Tkinter included), no third-party dependencies.
+Windows 10/11, Python 3.10+ (Tkinter included), no third-party dependencies. Use this if you would rather not run the release binary:
 
 ```bat
 start_tps_overlay.bat

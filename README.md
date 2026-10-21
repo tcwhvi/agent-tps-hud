@@ -4,7 +4,13 @@
 
 [English](README.en.md)
 
-![screenshot](docs/screenshot.png)
+![Agent TPS HUD](docs/hero.png)
+
+## 下载即用
+
+到 [Releases](https://github.com/tcwhvi/agent-tps-hud/releases/latest) 下载 `agent-tps-hud.exe`，双击运行即可，不需要安装 Python、不需要任何配置。
+
+它只读本机的会话数据，没有任何网络请求；关掉窗口就退出。首次运行如果 Windows SmartScreen 提示"已保护你的电脑"，是因为可执行文件没有代码签名证书（个人项目买不了），点"更多信息 → 仍要运行"即可；源码就在仓库里，也欢迎自己 `pythonw tps_overlay.py` 跑。
 
 ## 这是什么
 
@@ -15,6 +21,10 @@
 - 比较同一个模型在不同 Agent 里的输出速度；
 - 观察一轮任务里多次模型调用 + 工具调用后的整体输出速度；
 - 不打开日志、不翻账单，随时看到当前速度。
+
+悬浮窗原尺寸 190 × 128：
+
+![悬浮窗原尺寸](docs/screenshot.png)
 
 ## 口径
 
@@ -43,9 +53,9 @@ TPS = Σ(输出 token + 思考 token) / Σ(模型请求耗时)
 
 颜色：Z 蓝色、Q 紫色、W 黄色、M 绿色。
 
-## 运行
+## 从源码运行
 
-Windows 10/11，Python 3.10+（Tkinter 随 Python 自带），无第三方依赖。
+Windows 10/11，Python 3.10+（Tkinter 随 Python 自带），无第三方依赖。不想用 Release 里的 exe 时：
 
 ```bat
 start_tps_overlay.bat
