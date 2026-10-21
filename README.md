@@ -37,7 +37,7 @@ TPS = Σ(输出 token + 思考 token) / Σ(模型请求耗时)
 | 标识 | 客户端 | 本地数据源 | token 来源 |
 |---|---|---|---|
 | Z | ZCode | `~/.zcode/cli/db/db.sqlite`（`turn_usage` / `model_usage` / `message.tokens`） | provider output（已含 reasoning） |
-| Q | Qoder | `~/.qoder-cn/projects/**/*.jsonl` 或 `~/.qoder/projects/**/*.jsonl` | 文字估算（Qoder usage 常为 0，显示 `≈`） |
+| Q | Qoder | `~/.qoder-cn/projects/**/*.jsonl` + `%APPDATA%/QoderCN/SharedClientCache/cache/db/local.db` | CLI 文字估算（`≈`）；IDE 会话用 `chat_message.token_info` 真值 |
 | W | WorkBuddy | `~/.workbuddy/projects/**/*.jsonl` | provider output（已含 reasoning） |
 | M | MiMo Desktop / MiMo Code | `~/.local/share/mimocode/mimocode.db`（`message` / `part`） | output + reasoning 真值 |
 
@@ -93,12 +93,12 @@ python tps_overlay.py --once
 
 - **MiMo**：`output + reasoning` 和步骤耗时来自 `step-finish`，最接近真值；
 - **ZCode / WorkBuddy**：直接使用 provider 返回的 output token；该字段已包含思考 token，不再额外估算，避免重复计数；
-- **Qoder**：不返回 usage，按 thinking + 正文文字估算，显示 `≈`，只能看趋势；会话名取首条用户消息的前 40 字，仅用于本地弹窗显示；
+- **Qoder**：CLI transcript 不返回 usage，按 thinking + 正文文字估算，显示 `≈`，只能看趋势；IDE 会话可从 `chat_message.token_info` 读到 completion token 真值，标题从 `chat_session` 取；CLI 会话名取首条用户消息的前 40 字；
 - 不同厂商的 tokenizer / 计费口径不同，不要把它当作官方 benchmark；同一个模型下比较更有意义。
 
 ## 隐私
 
-只读本地会话数据库 / JSONL，提取 token 数、时间戳、文本长度等元数据；不保存、不上传 prompt 或回复内容；没有网络请求。Qoder 估算会临时读取正文/思考文本长度，会话名会截取首条用户消息的前 40 字，均不写入磁盘。
+只读本地会话数据库 / JSONL，提取 token 数、时间戳、文本长度等元数据；不保存、不上传 prompt 或回复内容；没有网络请求。Qoder 估算会临时读取正文/思考文本长度，会话名会截取首条用户消息的前 40 字或读取 IDE 自带标题，均不写入磁盘。SQLite 遇到写入锁时会复制临时快照读取，不改源库。
 
 ## 已知限制
 
@@ -110,7 +110,7 @@ python tps_overlay.py --once
 
 ## 开发
 
-新增客户端：实现一个 monitor，返回 `Reading`（`tps`、`history`、`generating`、`note` 等字段），在 `Overlay._worker` 里注册即可。所有 SQLite 读取都使用只读 URI 模式。
+新增客户端：实现一个 monitor，返回 `Reading`（`tps`、`history`、`generating`、`note` 等字段），在 `Overlay._worker` 里注册即可。所有 SQLite 读取都使用只读 URI 模式；遇到写入锁会回退到临时快照。
 
 测试：`python -m unittest discover -s tests -v`。
 

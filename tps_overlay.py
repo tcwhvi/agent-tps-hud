@@ -7,12 +7,15 @@ from local session stores. It never prints or persists prompt/response content.
 
 from __future__ import annotations
 
+import atexit
 import json
 import math
 import os
 import queue
+import shutil
 import sqlite3
 import sys
+import tempfile
 import threading
 import time
 import tkinter as tk
@@ -54,8 +57,46 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+SNAPSHOT_DIRS = []
+
+
+def _cleanup_snapshots() -> None:
+    for folder in SNAPSHOT_DIRS:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+atexit.register(_cleanup_snapshots)
+
+
+def _snapshot_connection(path: Path) -> sqlite3.Connection:
+    folder = tempfile.mkdtemp(prefix="agent-tps-hud-sqlite-")
+    SNAPSHOT_DIRS.append(folder)
+    target = Path(folder) / path.name
+    shutil.copy2(path, target)
+    for suffix in ("-wal", "-shm"):
+        source = Path(f"{path}{suffix}")
+        if source.exists():
+            shutil.copy2(source, Path(f"{target}{suffix}"))
+    conn = sqlite3.connect(target, timeout=0.5)
+    conn.execute("PRAGMA query_only=ON")
+    return conn
+
+
 def open_ro(path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=0.5)
+    conn = None
+    try:
+        conn = sqlite3.connect(
+            f"file:{path.as_posix()}?mode=ro", uri=True, timeout=0.5
+        )
+        conn.execute("select name from sqlite_master limit 1").fetchall()
+        return conn
+    except sqlite3.OperationalError as exc:
+        if conn is not None:
+            conn.close()
+        if "locked" not in str(exc).lower():
+            raise
+        # The source app can hold a write lock; read an isolated copy instead.
+        return _snapshot_connection(path)
 
 
 def file_cache_key(path: Path):
@@ -689,8 +730,76 @@ class QoderMonitor:
             self.session_start = session_start
             self.session_end = session_end
 
+    @staticmethod
+    def _ide_token_count(value) -> int:
+        info = jload(value) or {}
+        try:
+            return max(0, int(info.get("completion_tokens") or 0))
+        except Exception:
+            return 0
+
+    def _ide_stats(self, since_ms: int) -> dict:
+        groups = {}
+        for db in QODER_DBS:
+            if not db.exists():
+                continue
+            conn = None
+            try:
+                conn = open_ro(db)
+                try:
+                    rows = conn.execute(
+                        "select cm.session_id,cm.token_info,cm.gmt_create,"
+                        "cs.session_title from chat_message cm "
+                        "left join chat_session cs on cs.session_id=cm.session_id "
+                        "where cm.role='assistant' and cm.token_info is not null "
+                        "and cm.gmt_create>=?",
+                        (since_ms,),
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    rows = conn.execute(
+                        "select session_id,token_info,gmt_create,null "
+                        "from chat_message where role='assistant' "
+                        "and token_info is not null and gmt_create>=?",
+                        (since_ms,),
+                    ).fetchall()
+                for sid, token_info, created, title in rows:
+                    if not sid:
+                        continue
+                    tokens = self._ide_token_count(token_info)
+                    if tokens <= 0:
+                        continue
+                    entry = groups.setdefault(
+                        str(sid),
+                        {"tokens": 0.0, "calls": 0, "start": 0, "end": 0, "title": ""},
+                    )
+                    entry["tokens"] += tokens
+                    entry["calls"] += 1
+                    stamp = int(created or 0)
+                    entry["start"] = stamp if not entry["start"] else min(entry["start"], stamp)
+                    entry["end"] = max(entry["end"], stamp)
+                    if not entry["title"] and title:
+                        entry["title"] = str(title).replace("\n", " ")[:80]
+            except Exception:
+                continue
+            finally:
+                if conn is not None:
+                    conn.close()
+        return {
+            sid: SessionStat(
+                "Qoder",
+                sid,
+                entry["title"] or "Qoder IDE 会话",
+                entry["start"],
+                entry["end"],
+                entry["tokens"],
+                0,
+                entry["calls"],
+            )
+            for sid, entry in groups.items()
+        }
+
     def session_stats(self, since_ms: int) -> list[SessionStat]:
-        stats = []
+        by_id = {}
         files = []
         for root in QODER_ROOTS:
             if not root.exists():
@@ -708,7 +817,8 @@ class QoderMonitor:
             key = file_cache_key(path)
             cached = QODER_FILE_CACHE.get(key) if key else None
             if cached is not None:
-                stats.extend(cached)
+                for item in cached:
+                    by_id[item.session_id] = item
                 continue
             monitor = QoderMonitor()
             monitor._parse(path)
@@ -729,8 +839,31 @@ class QoderMonitor:
                 )
             if key:
                 remember_file(QODER_FILE_CACHE, key, values)
-            stats.extend(values)
-        return stats
+            for item in values:
+                by_id[item.session_id] = item
+
+        for sid, ide in self._ide_stats(since_ms).items():
+            local = by_id.get(sid)
+            if local is None:
+                by_id[sid] = ide
+                continue
+            title = (
+                ide.title
+                if ide.title and ide.title != "Qoder IDE 会话"
+                else local.title
+            )
+            by_id[sid] = SessionStat(
+                "Qoder",
+                sid,
+                title,
+                local.start_ms,
+                local.end_ms,
+                ide.tokens,
+                local.model_ms,
+                ide.calls,
+                approximate=False,
+            )
+        return list(by_id.values())
 
     def poll(self) -> Reading:
         path = self._latest_transcript()
@@ -1869,8 +2002,9 @@ class Overlay:
         cutoff = period_cutoff(self.popup_period)
         visible = [item for item in sessions if item.end_ms >= cutoff]
         total_tokens = sum(item.tokens for item in visible)
+        tps_tokens = sum(item.tokens for item in visible if item.model_ms > 0)
         total_ms = sum(item.model_ms for item in visible)
-        overall = total_tokens / (total_ms / 1000.0) if total_ms > 0 else None
+        overall = tps_tokens / (total_ms / 1000.0) if total_ms > 0 else None
         approximate = any(item.approximate for item in visible)
         self.popup_total.configure(text=fmt_tokens(total_tokens))
         self.popup_overall.configure(

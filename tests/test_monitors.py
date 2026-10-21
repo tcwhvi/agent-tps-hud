@@ -66,6 +66,108 @@ class MonitorTests(unittest.TestCase):
             monitor._parse(path)
             self.assertEqual(monitor.session_tokens, 100.0)
 
+    def test_qoder_ide_tokens_and_title(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = Path(folder) / "local.db"
+            conn = sqlite3.connect(db)
+            conn.execute(
+                "create table chat_message(session_id text, role text, "
+                "token_info text, gmt_create integer)"
+            )
+            conn.execute(
+                "create table chat_session(session_id text, session_title text)"
+            )
+            conn.execute(
+                "insert into chat_session values('s1','IDE session title')"
+            )
+            conn.execute(
+                "insert into chat_message values('s1','assistant',?,1000)",
+                (json.dumps({"completion_tokens": 100}),),
+            )
+            conn.execute(
+                "insert into chat_message values('s1','assistant',?,2000)",
+                (json.dumps({"completion_tokens": 50}),),
+            )
+            conn.commit()
+            conn.close()
+
+            old = m.QODER_DBS
+            m.QODER_DBS = [db]
+            try:
+                stats = m.QoderMonitor()._ide_stats(0)
+            finally:
+                m.QODER_DBS = old
+
+            self.assertEqual(stats["s1"].tokens, 150.0)
+            self.assertEqual(stats["s1"].calls, 2)
+            self.assertEqual(stats["s1"].title, "IDE session title")
+
+    def test_qoder_ide_tokens_override_transcript_estimate(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            db = folder / "local.db"
+            conn = sqlite3.connect(db)
+            conn.execute(
+                "create table chat_message(session_id text, role text, "
+                "token_info text, gmt_create integer)"
+            )
+            conn.execute(
+                "create table chat_session(session_id text, session_title text)"
+            )
+            conn.execute("insert into chat_session values('s1','IDE exact title')")
+            conn.execute(
+                "insert into chat_message values('s1','assistant',?,1000)",
+                (json.dumps({"completion_tokens": 150}),),
+            )
+            conn.commit()
+            conn.close()
+
+            root = folder / "projects" / "p"
+            root.mkdir(parents=True)
+            transcript = root / "s1.jsonl"
+            transcript.write_text(
+                "\n".join(
+                    json.dumps(row)
+                    for row in [
+                        {
+                            "type": "user",
+                            "timestamp": 1000,
+                            "message": {
+                                "role": "user",
+                                "content": [{"type": "text", "text": "prompt"}],
+                            },
+                        },
+                        {
+                            "type": "assistant",
+                            "timestamp": 2000,
+                            "message": {
+                                "id": "m1",
+                                "stop_reason": "end_turn",
+                                "content": [{"type": "text", "text": "x" * 100}],
+                            },
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            old_roots, old_dbs = m.QODER_ROOTS, m.QODER_DBS
+            m.QODER_ROOTS = [folder / "projects"]
+            m.QODER_DBS = [db]
+            m.QODER_FILE_CACHE.clear()
+            try:
+                stats = m.QoderMonitor().session_stats(0)
+            finally:
+                m.QODER_ROOTS = old_roots
+                m.QODER_DBS = old_dbs
+                m.QODER_FILE_CACHE.clear()
+
+            stat = next(item for item in stats if item.session_id == "s1")
+            self.assertEqual(stat.tokens, 150.0)
+            self.assertEqual(stat.title, "IDE exact title")
+            self.assertFalse(stat.approximate)
+            self.assertIsNotNone(stat.tps)
+
     def test_qoder_turn_closes_at_next_prompt_and_derives_title(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "session.jsonl"

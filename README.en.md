@@ -30,7 +30,7 @@ TPS = sum(output + thinking tokens) / sum(model request duration)
 | Tag | Agent | Local source | Token source |
 |---|---|---|---|
 | Z | ZCode | `~/.zcode/cli/db/db.sqlite` (`turn_usage` / `model_usage` / `message.tokens`) | provider output (includes reasoning) |
-| Q | Qoder | `~/.qoder-cn/projects/**/*.jsonl` or `~/.qoder/projects/**/*.jsonl` | text estimate (`≈`; Qoder often returns no usage) |
+| Q | Qoder | `~/.qoder-cn/projects/**/*.jsonl` + `%APPDATA%/QoderCN/SharedClientCache/cache/db/local.db` | CLI text estimate (`≈`); IDE sessions use exact `chat_message.token_info` |
 | W | WorkBuddy | `~/.workbuddy/projects/**/*.jsonl` | provider output (includes reasoning) |
 | M | MiMo Desktop / MiMo Code | `~/.local/share/mimocode/mimocode.db` (`message` / `part`) | exact output + reasoning |
 
@@ -84,9 +84,9 @@ Short left-click or right-click the HUD to inspect historical sessions:
 
 - MiMo is the most accurate (exact step tokens).
 - ZCode / WorkBuddy use the provider's output token count directly; it already includes thinking tokens, so reasoning is not added twice.
-- Qoder has no usage token in the local transcript; its value is an estimate and is prefixed with `≈`. Session names use the first 40 characters of the first user message and stay local.
+- Qoder CLI transcripts have no usage tokens, so their value is an estimate prefixed with `≈`. Qoder IDE sessions can use exact `chat_message.token_info` completion tokens and `chat_session` titles. CLI session names use the first 40 characters of the first user message and stay local.
 - Tokenizers and billing rules differ across vendors. Use this for trends and same-model comparisons, not as an official benchmark.
-- Read-only local metadata only. No prompts/responses are stored or uploaded. No network requests. Qoder reads text lengths for its estimate and truncates the first user message into a local-only session name; neither is written to disk.
+- Read-only local metadata only. No prompts/responses are stored or uploaded. No network requests. Qoder reads text lengths for its estimate, truncates the first user message into a local-only session name, or reads the IDE's own title; none is written to disk. SQLite reads fall back to a temporary snapshot when the source database is write-locked.
 
 ## Limitations
 
