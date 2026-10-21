@@ -196,6 +196,8 @@ class SessionStat:
     model_ms: int
     calls: int
     approximate: bool = False
+    input_tokens: float = 0.0
+    cache_tokens: float = 0.0
 
     @property
     def tps(self) -> Optional[float]:
@@ -289,6 +291,8 @@ class MimoMonitor:
             steps.append(current)
 
         total_tokens = 0.0
+        total_input = 0.0
+        total_cache = 0.0
         total_ms = 0
         last_ts = 0
         calls = 0
@@ -298,6 +302,9 @@ class MimoMonitor:
             if finish:
                 values = finish["data"].get("tokens") or {}
                 tokens = (values.get("output") or 0) + (values.get("reasoning") or 0)
+                total_input += values.get("input") or 0
+                cache = values.get("cache") or {}
+                total_cache += cache.get("read") or 0
             if not tokens and step["texts"]:
                 tokens = estimate_tokens("".join(p["text"] for p in step["texts"]))
             if not tokens:
@@ -315,7 +322,7 @@ class MimoMonitor:
             last_ts = max(last_ts, end)
             calls += 1
 
-        result = (total_tokens, total_ms, last_ts, calls)
+        result = (total_tokens, total_ms, last_ts, calls, total_input, total_cache)
         if len(self.stats_cache) > 800:
             self.stats_cache.clear()
         self.stats_cache[cache_key] = result
@@ -365,7 +372,7 @@ class MimoMonitor:
                         "complete": False,
                         "has_assistant": False,
                     }
-                tokens, model_ms, last_ts, calls = self._message_stats(
+                tokens, model_ms, last_ts, calls, _input, _cache = self._message_stats(
                     conn, mid, tc, tu
                 )
                 current["tokens"] += tokens
@@ -439,6 +446,8 @@ class MimoMonitor:
                     (sid,),
                 ).fetchall()
                 tokens = 0.0
+                input_tokens = 0.0
+                cache_tokens = 0.0
                 model_ms = 0
                 calls = 0
                 start = created or 0
@@ -451,6 +460,8 @@ class MimoMonitor:
                     tokens += value[0]
                     model_ms += value[1]
                     calls += value[3]
+                    input_tokens += value[4]
+                    cache_tokens += value[5]
                     start = min(start or tc, tc)
                     end = max(end, value[2] or tu or tc)
                 if tokens > 0 and model_ms > 0:
@@ -464,6 +475,8 @@ class MimoMonitor:
                             tokens,
                             model_ms,
                             calls,
+                            input_tokens=input_tokens,
+                            cache_tokens=cache_tokens,
                         )
                     )
         except Exception:
@@ -731,12 +744,15 @@ class QoderMonitor:
             self.session_end = session_end
 
     @staticmethod
-    def _ide_token_count(value) -> int:
+    def _ide_usage(value) -> tuple:
         info = jload(value) or {}
         try:
-            return max(0, int(info.get("completion_tokens") or 0))
+            output = max(0, int(info.get("completion_tokens") or 0))
+            prompt = max(0, int(info.get("prompt_tokens") or 0))
+            cached = max(0, int(info.get("cached_tokens") or 0))
+            return output, max(0, prompt - cached), cached
         except Exception:
-            return 0
+            return 0, 0, 0
 
     def _ide_stats(self, since_ms: int) -> dict:
         groups = {}
@@ -765,14 +781,24 @@ class QoderMonitor:
                 for sid, token_info, created, title in rows:
                     if not sid:
                         continue
-                    tokens = self._ide_token_count(token_info)
+                    tokens, input_tokens, cache_tokens = self._ide_usage(token_info)
                     if tokens <= 0:
                         continue
                     entry = groups.setdefault(
                         str(sid),
-                        {"tokens": 0.0, "calls": 0, "start": 0, "end": 0, "title": ""},
+                        {
+                            "tokens": 0.0,
+                            "input": 0.0,
+                            "cache": 0.0,
+                            "calls": 0,
+                            "start": 0,
+                            "end": 0,
+                            "title": "",
+                        },
                     )
                     entry["tokens"] += tokens
+                    entry["input"] += input_tokens
+                    entry["cache"] += cache_tokens
                     entry["calls"] += 1
                     stamp = int(created or 0)
                     entry["start"] = stamp if not entry["start"] else min(entry["start"], stamp)
@@ -794,6 +820,8 @@ class QoderMonitor:
                 entry["tokens"],
                 0,
                 entry["calls"],
+                input_tokens=entry["input"],
+                cache_tokens=entry["cache"],
             )
             for sid, entry in groups.items()
         }
@@ -862,6 +890,8 @@ class QoderMonitor:
                 local.model_ms,
                 ide.calls,
                 approximate=False,
+                input_tokens=ide.input_tokens,
+                cache_tokens=ide.cache_tokens,
             )
         return list(by_id.values())
 
@@ -919,6 +949,8 @@ class WorkBuddyMonitor:
         self.history_values = []
         self.session_tps = None
         self.session_tokens = 0.0
+        self.session_input = 0.0
+        self.session_cache = 0.0
         self.session_ms = 0
         self.session_calls = 0
         self.session_start = 0
@@ -943,6 +975,8 @@ class WorkBuddyMonitor:
         self.in_progress = False
         self.waiting_for_output = False
         self.session_tokens = 0.0
+        self.session_input = 0.0
+        self.session_cache = 0.0
         self.session_ms = 0
         self.session_calls = 0
         self.session_start = 0
@@ -986,10 +1020,14 @@ class WorkBuddyMonitor:
                                         current["tokens"],
                                         current["model_ms"],
                                         current["calls"],
+                                        current["input_tokens"],
+                                        current["cache_tokens"],
                                     )
                                 )
                         current = {
                             "tokens": 0.0,
+                            "input_tokens": 0.0,
+                            "cache_tokens": 0.0,
                             "model_ms": 0,
                             "calls": 0,
                             "complete": False,
@@ -1008,13 +1046,21 @@ class WorkBuddyMonitor:
                         if current is None:
                             current = {
                                 "tokens": 0.0,
+                                "input_tokens": 0.0,
+                                "cache_tokens": 0.0,
                                 "model_ms": 0,
                                 "calls": 0,
                                 "complete": False,
                                 "last_ts": ts,
                             }
+                        input_raw = usage.get("input_tokens") or 0
+                        cache = usage.get("cache_read_input_tokens") or 0
                         # WorkBuddy's output_tokens already includes reasoning.
                         current["tokens"] += float(output)
+                        current["input_tokens"] += max(
+                            0, float(input_raw) - float(cache)
+                        )
+                        current["cache_tokens"] += float(cache)
                         current["model_ms"] += ts - anchor
                         current["calls"] += 1
                         current["last_ts"] = ts
@@ -1038,6 +1084,8 @@ class WorkBuddyMonitor:
                         current["tokens"],
                         current["model_ms"],
                         current["calls"],
+                        current["input_tokens"],
+                        current["cache_tokens"],
                     )
                 )
 
@@ -1046,6 +1094,8 @@ class WorkBuddyMonitor:
             total_tokens = sum(turn[2] for turn in turns)
             total_ms = sum(turn[3] for turn in turns)
             total_calls = sum(turn[4] for turn in turns)
+            self.session_input = sum(turn[5] for turn in turns)
+            self.session_cache = sum(turn[6] for turn in turns)
             self.session_tps = total_tokens / (total_ms / 1000.0)
             self.note = (
                 f"{int(total_tokens)} tok / {total_ms / 1000:.1f}s · "
@@ -1121,6 +1171,8 @@ class WorkBuddyMonitor:
                         monitor.session_tokens,
                         monitor.session_ms,
                         monitor.session_calls,
+                        input_tokens=monitor.session_input,
+                        cache_tokens=monitor.session_cache,
                     )
                 )
             if key[0]:
@@ -1197,8 +1249,20 @@ class ZCodeMonitor:
                 parsed = jload(data) or {}
                 tokens = parsed.get("tokens") or {}
                 output = tokens.get("output")
-                if isinstance(output, (int, float)):
-                    values[message_id] = float(output)
+                if not isinstance(output, (int, float)):
+                    continue
+                prompt = tokens.get("input")
+                prompt = float(prompt) if isinstance(prompt, (int, float)) else 0.0
+                cache = tokens.get("cache") or {}
+                cached = cache.get("read")
+                cached = (
+                    float(cached) if isinstance(cached, (int, float)) else 0.0
+                )
+                values[message_id] = (
+                    float(output),
+                    max(0.0, prompt - cached),
+                    cached,
+                )
         return values
 
     def poll(self) -> Reading:
@@ -1236,9 +1300,8 @@ class ZCodeMonitor:
                         entry = by_turn.setdefault(
                             turn_id, {"tokens": 0.0, "model_ms": 0}
                         )
-                        entry["tokens"] += message_tokens.get(
-                            message_id, output or 0
-                        )
+                        value = message_tokens.get(message_id)
+                        entry["tokens"] += value[0] if value else (output or 0)
                         entry["model_ms"] += duration or 0
             finally:
                 conn.close()
@@ -1325,10 +1388,18 @@ class ZCodeMonitor:
 
             for sid, title, updated, turns, rows in prepared:
                 tokens = 0.0
+                input_tokens = 0.0
+                cache_tokens = 0.0
                 model_ms = 0
                 calls = 0
                 for _turn_id, message_id, duration, output in rows:
-                    tokens += message_tokens.get(message_id, output or 0)
+                    value = message_tokens.get(message_id)
+                    if value:
+                        tokens += value[0]
+                        input_tokens += value[1]
+                        cache_tokens += value[2]
+                    else:
+                        tokens += output or 0
                     model_ms += duration or 0
                     calls += 1
                 if tokens <= 0 or model_ms <= 0:
@@ -1347,6 +1418,8 @@ class ZCodeMonitor:
                         tokens,
                         model_ms,
                         calls,
+                        input_tokens=input_tokens,
+                        cache_tokens=cache_tokens,
                     )
                 )
         except Exception:
@@ -1388,7 +1461,7 @@ def once() -> None:
         print(json.dumps(r.__dict__, ensure_ascii=False))
 
 
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.3.2"
 BG = "#0f1117"
 BORDER = "#2a2f3a"
 TEXT = "#e6e8ee"
@@ -1794,16 +1867,26 @@ class Overlay:
 
         summary = tk.Frame(outer, bg=BG)
         summary.pack(fill="x", padx=10, pady=(2, 7))
-        self.popup_total = self._summary_card(summary, "TOKENS", TEXT, 16)
+        self.popup_total = self._summary_card(summary, "OUT TOKENS", TEXT, 16)
         self.popup_overall = self._summary_card(summary, "TPS", GREEN, 16)
         self.popup_count = self._summary_card(summary, "SESSIONS", TEXT, 16)
+
+        self.popup_breakdown = tk.Label(
+            outer,
+            text="",
+            bg=BG,
+            fg="#6b7280",
+            font=("Consolas", 7),
+            anchor="w",
+        )
+        self.popup_breakdown.pack(fill="x", padx=10, pady=(0, 4))
 
         tk.Frame(outer, bg=BORDER, height=1).pack(fill="x", padx=10)
 
         columns = tk.Frame(outer, bg=BG)
         columns.pack(fill="x", padx=10, pady=(4, 1))
         for index, (text, align, width) in enumerate(
-            (("TIME", "w", 11), ("", "w", 2), ("SESSION", "w", 0), ("TOKENS", "e", 8), ("TPS", "e", 6))
+            (("TIME", "w", 11), ("", "w", 2), ("SESSION", "w", 0), ("OUT", "e", 8), ("TPS", "e", 6))
         ):
             label = tk.Label(
                 columns,
@@ -2041,6 +2124,7 @@ class Overlay:
             self.popup_total.configure(text="统计中…")
             self.popup_overall.configure(text="—")
             self.popup_count.configure(text="—")
+            self.popup_breakdown.configure(text="")
             window_name = {"today": "今天", "7d": "近 7 天", "30d": "近 30 天"}.get(
                 self.popup_window, ""
             )
@@ -2052,6 +2136,8 @@ class Overlay:
         cutoff = period_cutoff(self.popup_period)
         visible = [item for item in sessions if item.end_ms >= cutoff]
         total_tokens = sum(item.tokens for item in visible)
+        total_input = sum(item.input_tokens for item in visible)
+        total_cache = sum(item.cache_tokens for item in visible)
         tps_tokens = sum(item.tokens for item in visible if item.model_ms > 0)
         total_ms = sum(item.model_ms for item in visible)
         overall = tps_tokens / (total_ms / 1000.0) if total_ms > 0 else None
@@ -2061,6 +2147,9 @@ class Overlay:
             text=fmt_tps(overall, approximate)
         )
         self.popup_count.configure(text=str(len(visible)))
+        self.popup_breakdown.configure(
+            text=f"IN {fmt_tokens(total_input)} · CACHE {fmt_tokens(total_cache)}"
+        )
         stamp = (
             datetime.fromtimestamp(self.popup_updated_at).strftime("%H:%M:%S")
             if self.popup_updated_at

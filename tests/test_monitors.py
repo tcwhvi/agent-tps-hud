@@ -55,7 +55,13 @@ class MonitorTests(unittest.TestCase):
                     "type": "message",
                     "role": "assistant",
                     "timestamp": 2000,
-                    "message": {"usage": {"output_tokens": 100}},
+                    "message": {
+                        "usage": {
+                            "input_tokens": 1000,
+                            "output_tokens": 100,
+                            "cache_read_input_tokens": 200,
+                        }
+                    },
                     "providerData": {"reasoning": "x" * 1200},
                 },
             ]
@@ -65,6 +71,8 @@ class MonitorTests(unittest.TestCase):
             monitor = m.WorkBuddyMonitor()
             monitor._parse(path)
             self.assertEqual(monitor.session_tokens, 100.0)
+            self.assertEqual(monitor.session_input, 800.0)
+            self.assertEqual(monitor.session_cache, 200.0)
 
     def test_qoder_ide_tokens_and_title(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -82,7 +90,15 @@ class MonitorTests(unittest.TestCase):
             )
             conn.execute(
                 "insert into chat_message values('s1','assistant',?,1000)",
-                (json.dumps({"completion_tokens": 100}),),
+                (
+                    json.dumps(
+                        {
+                            "prompt_tokens": 500,
+                            "completion_tokens": 100,
+                            "cached_tokens": 100,
+                        }
+                    ),
+                ),
             )
             conn.execute(
                 "insert into chat_message values('s1','assistant',?,2000)",
@@ -99,6 +115,8 @@ class MonitorTests(unittest.TestCase):
                 m.QODER_DBS = old
 
             self.assertEqual(stats["s1"].tokens, 150.0)
+            self.assertEqual(stats["s1"].input_tokens, 400.0)
+            self.assertEqual(stats["s1"].cache_tokens, 100.0)
             self.assertEqual(stats["s1"].calls, 2)
             self.assertEqual(stats["s1"].title, "IDE session title")
 

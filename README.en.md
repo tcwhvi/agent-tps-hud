@@ -71,8 +71,9 @@ python tps_overlay.py --once
 Short left-click or right-click the HUD to inspect historical sessions:
 
 - Switch between today / 7 days / 30 days.
-- See total tokens, overall TPS and session count for the period.
-- List each session's tokens and TPS by time.
+- The big number is output tokens (the TPS basis); IN / CACHE show input and cached tokens separately, only for clients that expose provider usage.
+- See overall TPS and session count for the period.
+- List each session's output tokens and TPS by time.
 - Scroll with the wheel or the thin bar on the right; scrolling stops at the top and bottom.
 - Today's data is preloaded at startup, so the first open is usually instant.
 - While open, today's data refreshes silently about every 60 seconds; 7-day / 30-day data refreshes on switching, reopening or clicking `↻`.
