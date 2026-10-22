@@ -5,16 +5,16 @@ Windows 10/11。下载 `agent-tps-hud.exe` 双击运行，不需要安装 Python
 
 Win10/11 only. Download `agent-tps-hud.exe` and double-click — no Python needed. The binary is unsigned (individual projects can't get a code-signing certificate), so SmartScreen warns once. The source is in this repo.
 
-## 新增 / What's new
+## v0.4.0：曲线不再被新会话清空
 
-- 悬浮窗标题与弹窗头部显示版本号 / version shown in the HUD title
-- 左键短按或右键打开统计弹窗：今天 / 7 天 / 30 天，按时间列出每个会话的 token 与 TPS
-- OUT / IN / CACHE 三类 token 分列统计，不再把输入算进输出
-- 生成期间不再显示"生成中"，改为上一轮 TPS 缓慢闪烁
-- 启动预读 + 结果缓存，重复打开秒显；会话文件按 mtime / size 增量解析
-- Qoder IDE 会话改用本地 `chat_message.token_info` 真值；CLI / Desktop transcript 无 usage，仍是估算并标 `≈`
-- 修正 token 重复计数：provider 返回的 output 已含 reasoning，不再额外叠加估算
-- 自绘细滚动条，滚到顶 / 底不再空滚
+之前曲线只反映"当前最新那一个会话"里的轮次：新开一个会话，旧会话攒下的点会被整条覆盖，看起来就像"曲线只剩最后一个点"。现在：
+
+- 曲线跨会话保留，滚动窗口仍是最近 24 轮；
+- 新会话的第一个点前画一条细竖线作会话分隔，不同会话不会混成一段看不出来的折线；
+- 每家的 `Reading` 带上真正的会话标识（ZCode `session_id`、MiMo `session_id`、Qoder / WorkBuddy 的 transcript 路径），不再拿轮次时间戳当会话号；
+- 新增 `HistoryTrack` 及其单元测试。
+
+限制没变：每家仍只显示当前最新活跃会话的实时数字——同时开国内版和国际版 Qoder 时，谁刚有动作谁占那一行（曲线会保留前一个会话的点）。
 
 ## 口径 / Metric
 

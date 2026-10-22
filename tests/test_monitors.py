@@ -234,5 +234,57 @@ class MonitorTests(unittest.TestCase):
             self.assertEqual(len(monitor.history_values), 1)
 
 
+class HistoryTrackTests(unittest.TestCase):
+    def test_first_session_has_no_boundary(self):
+        track = m.HistoryTrack(limit=24)
+        track.push("s1", (10.0, 20.0))
+        self.assertEqual(track.points(), [(10.0, False), (20.0, False)])
+
+    def test_new_session_keeps_old_points_and_marks_boundary(self):
+        track = m.HistoryTrack(limit=24)
+        track.push("s1", (10.0, 20.0, 30.0))
+        track.push("s2", (40.0, 50.0))
+        self.assertEqual(
+            track.points(),
+            [
+                (10.0, False),
+                (20.0, False),
+                (30.0, False),
+                (40.0, True),
+                (50.0, False),
+            ],
+        )
+
+    def test_same_session_growth_does_not_duplicate_or_move_boundary(self):
+        track = m.HistoryTrack(limit=24)
+        track.push("s1", (10.0, 20.0))
+        track.push("s2", (40.0,))
+        track.push("s2", (40.0, 50.0))
+        self.assertEqual(
+            track.points(),
+            [(10.0, False), (20.0, False), (40.0, True), (50.0, False)],
+        )
+
+    def test_limit_drops_oldest_points_and_keeps_boundary(self):
+        track = m.HistoryTrack(limit=4)
+        track.push("s1", (1.0, 2.0, 3.0))
+        track.push("s2", (4.0, 5.0))
+        self.assertEqual(
+            track.points(),
+            [(2.0, False), (3.0, False), (4.0, True), (5.0, False)],
+        )
+        track.push("s3", (6.0,))
+        self.assertEqual(
+            track.points(),
+            [(3.0, False), (4.0, True), (5.0, False), (6.0, True)],
+        )
+
+    def test_new_session_without_turns_keeps_previous_curve(self):
+        track = m.HistoryTrack(limit=24)
+        track.push("s1", (10.0, 20.0))
+        track.push("s2", ())
+        self.assertEqual(track.points(), [(10.0, False), (20.0, False)])
+
+
 if __name__ == "__main__":
     unittest.main()

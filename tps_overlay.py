@@ -19,7 +19,6 @@ import tempfile
 import threading
 import time
 import tkinter as tk
-from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -182,6 +181,7 @@ class Reading:
     note: str = ""
     generating: bool = False
     sample_key: str = ""
+    session_key: str = ""
     history: tuple[float, ...] = ()
 
 
@@ -341,6 +341,7 @@ class MimoMonitor:
             ).fetchone()
             if not session:
                 return Reading("MiMo", None, "每轮", note="暂无会话")
+            session_key = str(session[0])
             messages = conn.execute(
                 "select id,time_created,time_updated,data from message "
                 "where session_id=? order by time_created asc limit 200",
@@ -423,6 +424,7 @@ class MimoMonitor:
                 f"{len(completed)} turns / {total_calls} calls",
                 self.generating,
                 sample_key=str(completed[-1]["last_ts"]),
+                session_key=session_key,
                 history=tuple(history[-24:]),
             )
         return Reading("MiMo", None, "每轮", "", self.generating, "暂无完成的轮次", self.generating)
@@ -924,6 +926,7 @@ class QoderMonitor:
                 self.note,
                 generating,
                 sample_key=self.sample_key,
+                session_key=self.sample_key,
                 history=tuple(self.history_values[-24:]),
             )
         return Reading(
@@ -1229,6 +1232,7 @@ class WorkBuddyMonitor:
                 note,
                 generating,
                 sample_key=str(self.last[2]),
+                session_key=str(path),
                 history=tuple(self.history_values[-24:]),
             )
         note = "生成中…" if generating else "等待生成"
@@ -1341,6 +1345,7 @@ class ZCodeMonitor:
                 f"{int(session_tokens)} tok / {session_ms / 1000:.1f}s · {session_turns} turns / {session_calls} calls",
                 generating,
                 sample_key=str(session_id),
+                session_key=str(session_id),
                 history=tuple(history[-24:]),
             )
         return Reading("ZCode", None, "每轮", "", generating, "暂无完成的轮次")
@@ -1461,7 +1466,7 @@ def once() -> None:
         print(json.dumps(r.__dict__, ensure_ascii=False))
 
 
-APP_VERSION = "0.3.2"
+APP_VERSION = "0.4.0"
 BG = "#0f1117"
 BORDER = "#2a2f3a"
 TEXT = "#e6e8ee"
@@ -1480,6 +1485,42 @@ CLIENT_COLORS = {
     "WorkBuddy": YELLOW,
     "MiMo": GREEN,
 }
+
+
+class HistoryTrack:
+    """Rolling sparkline points for one client, kept across sessions.
+
+    Each monitor only reports the turns of its newest session, so the previous
+    session is frozen when the session key changes instead of being dropped.
+    """
+
+    def __init__(self, limit: int = 24) -> None:
+        self.limit = limit
+        self.key = ""
+        self.frozen: list[tuple[float, bool]] = []
+        self.values: list[float] = []
+        self.boundary = False
+
+    def push(self, session_key: str, values: tuple[float, ...]) -> None:
+        if session_key and session_key != self.key:
+            self._freeze()
+            self.key = session_key
+            self.boundary = bool(self.frozen)
+        self.values = list(values)
+
+    def _freeze(self) -> None:
+        if not self.values:
+            return
+        self.frozen.extend((v, self.boundary and i == 0) for i, v in enumerate(self.values))
+        self.frozen = self.frozen[-self.limit :]
+        self.values = []
+        self.boundary = False
+
+    def points(self) -> list[tuple[float, bool]]:
+        points = self.frozen + [
+            (v, self.boundary and i == 0) for i, v in enumerate(self.values)
+        ]
+        return points[-self.limit :]
 
 
 class Overlay:
@@ -1510,7 +1551,7 @@ class Overlay:
         self.stop = threading.Event()
         self.worker = threading.Thread(target=self._worker, daemon=True)
         self.worker.start()
-        self.history = {name: deque(maxlen=24) for name in ("ZCode", "Qoder", "WorkBuddy", "MiMo")}
+        self.history = {name: HistoryTrack() for name in CLIENT_COLORS}
         self.popup = None
         self.popup_period = "today"
         self.popup_window = "today"
@@ -1632,7 +1673,9 @@ class Overlay:
             widget.bind("<ButtonRelease-1>", self._end_drag)
             widget.bind("<Button-3>", self._toggle_popup)
 
-    def _draw_spark(self, canvas: tk.Canvas, values, color: str) -> None:
+    def _draw_spark(
+        self, canvas: tk.Canvas, values, color: str, marks=()
+    ) -> None:
         canvas.delete("all")
         width = int(canvas.cget("width"))
         height = int(canvas.cget("height"))
@@ -1647,6 +1690,8 @@ class Overlay:
                 fill=color,
                 outline="",
             )
+            if 0 in marks:
+                self._draw_boundary(canvas, width - 7, height)
             return
         lo = min(values)
         hi = max(values)
@@ -1666,6 +1711,11 @@ class Overlay:
             ) * (height - 2 * pad)
             points.extend((x, y))
         canvas.create_line(*points, fill=color, width=1.6, smooth=True)
+        step = (width - 2 * pad) / (count - 1)
+        for index in marks:
+            if index <= 0:
+                continue
+            self._draw_boundary(canvas, pad + index * step - step / 2, height)
         canvas.create_oval(
             points[-2] - 1.5,
             points[-1] - 1.5,
@@ -1674,6 +1724,10 @@ class Overlay:
             fill=color,
             outline="",
         )
+
+    @staticmethod
+    def _draw_boundary(canvas: tk.Canvas, x: float, height: int) -> None:
+        canvas.create_line(x, 1, x, height - 1, fill="#39404f", width=1)
 
     def _worker(self) -> None:
         monitors = {
@@ -1708,9 +1762,16 @@ class Overlay:
             if not row:
                 continue
 
-            if r.history:
-                self.history[r.client] = deque(r.history[-24:], maxlen=24)
-            values = list(self.history.get(r.client, []))
+            values, marks = [], ()
+            track = self.history.get(r.client)
+            if track is not None:
+                if r.history:
+                    track.push(r.session_key, r.history)
+                points = track.points()
+                values = [point[0] for point in points]
+                marks = tuple(
+                    index for index, point in enumerate(points) if point[1]
+                )
             display_tps = values[-1] if values else r.tps
 
             if display_tps is None:
@@ -1746,7 +1807,7 @@ class Overlay:
                 if display_tps is not None:
                     row["tps"].config(fg=color)
 
-            self._draw_spark(row["spark"], values, color)
+            self._draw_spark(row["spark"], values, color, marks)
 
     @staticmethod
     def _blend_color(first: str, second: str, amount: float) -> str:

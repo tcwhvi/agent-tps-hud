@@ -35,7 +35,7 @@ TPS = sum(output + thinking tokens) / sum(model request duration)
 - All model requests inside a turn are included (not just the last one).
 - A new user prompt immediately closes the previous turn and adds it to the sparkline; while the new turn is generating, the HUD keeps showing the interrupted turn's TPS instead of staying on “generating”.
 - Big number = latest completed turn.
-- Sparkline = last 24 turns; the rightmost point is the latest turn.
+- Sparkline = last 24 turns, kept across sessions, with a thin vertical divider where a new session starts.
 
 ## Supported agents
 
@@ -106,7 +106,7 @@ Short left-click or right-click the HUD to inspect historical sessions:
 
 - Windows only; edge hiding uses the primary monitor work area.
 - Local formats may change between client versions.
-- Only the latest session per agent is read.
+- Each row reflects the currently most active session of that client. When several sessions coexist (for example the CN and international Qoder running side by side), the one with the latest activity owns the row, while the sparkline still keeps the earlier session's points.
 - Not affiliated with ZCode, Qoder, WorkBuddy, MiMo or their vendors.
 
 ## License
