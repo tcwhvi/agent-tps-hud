@@ -1466,7 +1466,7 @@ def once() -> None:
         print(json.dumps(r.__dict__, ensure_ascii=False))
 
 
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.4.1"
 BG = "#0f1117"
 BORDER = "#2a2f3a"
 TEXT = "#e6e8ee"
@@ -1485,6 +1485,28 @@ CLIENT_COLORS = {
     "WorkBuddy": YELLOW,
     "MiMo": GREEN,
 }
+
+
+def request_geometry(window, width: int, height: int, x: int, y: int) -> tuple:
+    """Ask Tk to move the window and return what must be confirmed later.
+
+    Tk silently drops a geometry request when the window has not been moved
+    for a while, so the caller has to re-issue it until the window lands.
+    """
+
+    window.geometry(f"{width}x{height}+{x}+{y}")
+    return (x, y)
+
+
+def confirm_geometry(window, target, width: int, height: int):
+    """Return None once the window really sits at target, else re-issue it."""
+
+    if not target:
+        return None
+    if (window.winfo_x(), window.winfo_y()) == (target[0], target[1]):
+        return None
+    window.geometry(f"{width}x{height}+{target[0]}+{target[1]}")
+    return target
 
 
 class HistoryTrack:
@@ -1546,6 +1568,8 @@ class Overlay:
         self.last_inside = time.time()
         self.hide_time = 0.0
         self.full_geom = (x, y)
+        self.pending_geom = None
+        self.click_while_hidden = False
 
         self.q: queue.Queue[list[Reading]] = queue.Queue()
         self.stop = threading.Event()
@@ -2284,8 +2308,12 @@ class Overlay:
         self._press_root = (event.x_root, event.y_root)
         self._moved = False
         if self.hidden:
+            # A click on the 5px strip should open the stats too, not only slide
+            # the HUD back out.
             self._expand()
+            self.click_while_hidden = True
             return
+        self.click_while_hidden = False
         self.dragging = True
         self.last_inside = time.time()
         self._drag_x = event.x_root - self.root.winfo_x()
@@ -2305,9 +2333,13 @@ class Overlay:
         y = event.y_root - self._drag_y
         self.root.geometry(f"+{x}+{y}")
         self.full_geom = (x, y)
+        self.pending_geom = None
 
     def _end_drag(self, _event=None) -> None:
         if not self.dragging:
+            if self.click_while_hidden:
+                self.click_while_hidden = False
+                self._toggle_popup()
             return
         moved = self._moved
         self.dragging = False
@@ -2347,7 +2379,7 @@ class Overlay:
 
         self.edge = edge
         self.full_geom = (fx, fy)
-        self.root.geometry(f"{width}x{height}+{fx}+{fy}")
+        self.pending_geom = request_geometry(self.root, width, height, fx, fy)
         if edge:
             self._hide()
         else:
@@ -2386,7 +2418,7 @@ class Overlay:
         self.hidden = True
         self.hover_armed = False
         self.hide_time = time.time()
-        self.root.geometry(f"{width}x{height}+{px}+{py}")
+        self.pending_geom = request_geometry(self.root, width, height, px, py)
         self.outer.configure(highlightbackground=ACCENT, highlightthickness=2)
         self.root.lift()
 
@@ -2394,7 +2426,7 @@ class Overlay:
         if not self.edge:
             return
         fx, fy = self.full_geom
-        self.root.geometry(f"{self.width}x{self.height}+{fx}+{fy}")
+        self.pending_geom = request_geometry(self.root, self.width, self.height, fx, fy)
         self.hidden = False
         self.hover_armed = True
         self.last_inside = time.time()
@@ -2409,29 +2441,33 @@ class Overlay:
     def _hover_check(self) -> None:
         if self.stop.is_set():
             return
-        if self.popup is not None:
-            self.last_inside = time.time()
-            self.root.after(80, self._hover_check)
-            return
-        px, py = self.root.winfo_pointerxy()
-        if self.hidden and self.edge:
-            if self._inside(px, py, self._peek_rect()):
-                if self.hover_armed or (time.time() - self.hide_time) > 1.2:
-                    self._expand()
-            else:
-                self.hover_armed = True
-        elif self.edge and not self.dragging:
-            rect = (
-                self.root.winfo_x(),
-                self.root.winfo_y(),
-                self.root.winfo_x() + self.width,
-                self.root.winfo_y() + self.height,
+        try:
+            self.pending_geom = confirm_geometry(
+                self.root, self.pending_geom, self.width, self.height
             )
-            if self._inside(px, py, rect):
+            if self.popup is not None:
                 self.last_inside = time.time()
-            elif (time.time() - self.last_inside) > HIDE_DELAY:
-                self._hide()
-        self.root.after(80, self._hover_check)
+                return
+            px, py = self.root.winfo_pointerxy()
+            if self.hidden and self.edge:
+                if self._inside(px, py, self._peek_rect()):
+                    if self.hover_armed or (time.time() - self.hide_time) > 1.2:
+                        self._expand()
+                else:
+                    self.hover_armed = True
+            elif self.edge and not self.dragging:
+                rect = (
+                    self.root.winfo_x(),
+                    self.root.winfo_y(),
+                    self.root.winfo_x() + self.width,
+                    self.root.winfo_y() + self.height,
+                )
+                if self._inside(px, py, rect):
+                    self.last_inside = time.time()
+                elif (time.time() - self.last_inside) > HIDE_DELAY:
+                    self._hide()
+        finally:
+            self.root.after(80, self._hover_check)
 
     def _close(self) -> None:
         self.stop.set()

@@ -75,6 +75,7 @@ python tps_overlay.py --once
 - While generating, the number keeps the previous turn's TPS and blinks slowly instead of showing “generating”.
 - Drop within 14px of a screen edge to hide, leaving a 5px accent strip.
 - Hover the strip to expand; move away for 0.6s to hide again.
+- Every expand and hide is checked against the real window position, so a geometry request that the OS silently drops is re-issued instead of leaving the HUD stuck.
 - Drag away from the edge to disable auto-hide.
 - Click `×` to quit.
 
