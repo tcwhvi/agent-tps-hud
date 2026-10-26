@@ -5,17 +5,17 @@ Windows 10/11。下载 `agent-tps-hud.exe` 双击运行，不需要安装 Python
 
 Win10/11 only. Download `agent-tps-hud.exe` and double-click — no Python needed. The binary is unsigned (individual projects can't get a code-signing certificate), so SmartScreen warns once. The source is in this repo.
 
+## v0.4.2 修复：生成中状态两头都不对
+
+- **ZCode 正在输出却不闪烁**：轮次表 `turn_usage` 只在轮次结束时才写入，状态永远只有 `completed/cancelled/error`，所以旧判定 `status not in (…)` 恒为假 —— 这一行的闪烁其实从来没工作过。现在改看 `message` 表：最新的 assistant 消息没有 `time.completed` 就是在生成中。
+- **MiMo 已退出却一直在闪**：旧判定是"最后一轮 `finish != stop`"，客户端中途退出就永远停在"生成中"。现在加新鲜度上限：消息和它的 `part` 都超过 120 秒没动就停止闪烁（120 秒沿用 WorkBuddy 已有的窗口）。
+- 长回答不会被误停：assistant 消息行的 `time_updated` 在创建后就不动了，所以时钟取"消息与 part 的最新时间"，实测单次模型请求跑 117 秒也不会被误判成已停。
+
+新增 9 个用例覆盖这套判定（含"只看消息时间就会漏掉长回答"这一条）。
+
 ## v0.4.1 修复：贴边隐藏后第一次悬停没反应
 
-现象：HUD 贴边缩成 5px 提示条后，隔一段时间第一次把鼠标压上去，窗口纹丝不动；移开再压第二次才弹出来。
-
-根因：`wm geometry` 移动请求会被静默丢弃（实测在窗口长时间没有位移之后第一次最容易发生，间隔越久越稳定复现），而代码在发出请求后立刻把内部状态改成"已展开"，于是程序以为展开了、窗口其实没动，也就再没有第二次请求。
-
-修法：发出移动请求后记录目标位置，在 80ms 的心跳里核对窗口真实坐标是否到位，没到位就重发，到位后停止。真窗口验证：连续丢掉 3 次请求，仍能在 0.26 秒内落位；落位后不再产生多余的移动调用。
-
-同时修掉：左键压在 5px 提示条上只展开、不弹统计窗（`ButtonRelease` 在 `dragging=False` 时直接 return 了）。现在隐藏状态下左键和右键一样，展开 + 弹统计。
-
-另外把悬停心跳的 `after` 重排移进 `finally`：之前只要心跳函数里抛一次异常，悬停和自动隐藏会一起永久停摆。
+`wm geometry` 移动请求会被 Tk 静默丢弃（窗口长时间没位移后的第一次请求最容易发生），旧代码发完请求就把状态改成"已展开"，于是程序以为动了、窗口其实没动，也不会再发第二次。现在记下目标位置，在 80ms 心跳里核对窗口真实坐标，没到位就重发，到位后停止。同时修了隐藏态左键只展开不弹统计窗，并把悬停心跳的 `after` 重排移进 `finally`。
 
 ## v0.4.0 曲线跨会话
 

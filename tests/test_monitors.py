@@ -23,7 +23,14 @@ class MonitorTests(unittest.TestCase):
                 "create table model_usage(turn_id text, assistant_message_id text, "
                 "duration_ms integer, output_tokens integer, status text)"
             )
-            conn.execute("create table message(id text, data text)")
+            conn.execute(
+                "create table message(id text, session_id text, time_created integer, "
+                "time_updated integer, data text)"
+            )
+            conn.execute(
+                "create table part(id text, message_id text, session_id text, "
+                "time_created integer, time_updated integer, data text)"
+            )
             conn.execute(
                 "insert into turn_usage values('t1','s1','completed',1000,2000,1000,100,0,1)"
             )
@@ -31,7 +38,7 @@ class MonitorTests(unittest.TestCase):
                 "insert into model_usage values('t1','m1',1000,100,'completed')"
             )
             conn.execute(
-                "insert into message values('m1',?)",
+                "insert into message values('m1','s1',1000,2000,?)",
                 (json.dumps({"tokens": {"output": 80}}),),
             )
             conn.commit()

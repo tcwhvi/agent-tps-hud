@@ -56,6 +56,33 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+# A turn that has not written anything for this long is a client that went away
+# mid-generation, not one that is still streaming.
+GENERATING_STALE_MS = 120_000
+
+
+def is_fresh(timestamp_ms, now: int) -> bool:
+    return bool(timestamp_ms) and (now - int(timestamp_ms)) < GENERATING_STALE_MS
+
+
+def assistant_in_flight(rows, now: int) -> bool:
+    """True while the newest assistant message still lacks time.completed.
+
+    ZCode and MiMo write usage rows only when a turn ends, so the sole live
+    signal is the open assistant message; a client that exits mid-turn leaves
+    one open forever, hence the freshness bound.
+    """
+
+    for data, updated in rows:
+        parsed = jload(data) or {}
+        if parsed.get("role") != "assistant":
+            continue
+        if (parsed.get("time") or {}).get("completed"):
+            return False
+        return is_fresh(updated, now)
+    return False
+
+
 SNAPSHOT_DIRS = []
 
 
@@ -405,8 +432,12 @@ class MimoMonitor:
             if 0 < tps < 500:
                 history.append(tps)
         self.history_values = history
+        last_turn = turns[-1] if turns else None
         self.generating = bool(
-            turns and turns[-1]["has_assistant"] and not turns[-1]["complete"]
+            last_turn
+            and last_turn["has_assistant"]
+            and not last_turn["complete"]
+            and is_fresh(last_turn["last_ts"], now_ms())
         )
 
         if completed:
@@ -1207,14 +1238,14 @@ class WorkBuddyMonitor:
                     ).fetchone()
                 finally:
                     conn.close()
-                if row and row[0] == "active" and (now_ms() - row[1]) < 120000:
+                if row and row[0] == "active" and (now_ms() - row[1]) < GENERATING_STALE_MS:
                     generating = True
             except Exception:
                 pass
         try:
             if (
                 self.in_progress
-                and (now_ms() - int(path.stat().st_mtime * 1000)) < 120000
+                and (now_ms() - int(path.stat().st_mtime * 1000)) < GENERATING_STALE_MS
             ):
                 generating = True
         except OSError:
@@ -1272,6 +1303,7 @@ class ZCodeMonitor:
     def poll(self) -> Reading:
         if not ZCODE_DB.exists():
             return Reading("ZCode", None, "每轮", note="未找到 db.sqlite")
+        assistant_rows = []
         try:
             conn = open_ro(ZCODE_DB)
             try:
@@ -1287,6 +1319,17 @@ class ZCodeMonitor:
                     "from turn_usage where session_id=? order by started_at",
                     (session_id,),
                 ).fetchall()
+                assistant_rows = [
+                    (data, max(updated or 0, part_updated or 0))
+                    for data, updated, part_updated in conn.execute(
+                        "select m.data, m.time_updated, "
+                        "(select max(time_updated) from part p "
+                        " where p.message_id = m.id) "
+                        "from message m where m.session_id=? "
+                        "order by m.time_created desc limit 5",
+                        (session_id,),
+                    ).fetchall()
+                ]
                 by_turn = {}
                 turn_ids = [turn[0] for turn in turns if turn[0]]
                 if turn_ids:
@@ -1331,9 +1374,7 @@ class ZCodeMonitor:
                 session_calls += calls or 0
                 session_turns += 1
 
-        generating = bool(
-            turns and turns[-1][1] not in ("completed", "cancelled", "error")
-        )
+        generating = assistant_in_flight(assistant_rows, now_ms())
         if session_ms > 0:
             session_tps = session_tokens / (session_ms / 1000.0)
             return Reading(
@@ -1466,7 +1507,7 @@ def once() -> None:
         print(json.dumps(r.__dict__, ensure_ascii=False))
 
 
-APP_VERSION = "0.4.1"
+APP_VERSION = "0.4.2"
 BG = "#0f1117"
 BORDER = "#2a2f3a"
 TEXT = "#e6e8ee"
