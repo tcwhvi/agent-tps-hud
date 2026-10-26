@@ -5,6 +5,14 @@ Windows 10/11。下载 `agent-tps-hud.exe` 双击运行，不需要安装 Python
 
 Win10/11 only. Download `agent-tps-hud.exe` and double-click — no Python needed. The binary is unsigned (individual projects can't get a code-signing certificate), so SmartScreen warns once. The source is in this repo.
 
+## v0.4.3 修复：WorkBuddy 生成中不闪烁、ZCode 长工具链闪烁中断
+
+- **WorkBuddy 正在输出却不闪烁**：两条闪烁信号此前同时失效。运行中的会话在 `sessions` 表里的状态是 `working`，代码只认 `active`，数据库信号永远为假；流式期间 jsonl 还会写入不带 usage 的中间 assistant 消息（工具调用前的输出），任何 assistant 行都会把轮次标记成已完成，文件侧的"进行中"信号也随之失效。现在按 `working` 判定（兼容 `active`），并且只有带 usage 的最终消息才闭合轮次；首条回复尚未产生 usage 时也会闪。
+- **ZCode 长工具链闪烁中途熄灭**：生成中判定此前从"最近 5 条消息"里找未完成的 assistant 消息，而工具结果也是消息行——实测一轮里出现过 assistant 之后连续 7 条工具结果，第 5 次工具调用后打开中的 assistant 消息就被挤出窗口。现在先按角色筛出 assistant 再取最新。
+- **没有 `part` 表的旧库不再整行报"读取失败"**：part 新鲜度查询失败时自动降级为只看消息时间。
+
+新增 5 个用例：连续工具结果挤不掉窗口、无 part 表降级、中间 assistant 消息不闭合轮次、最终消息闭合轮次、`working` 状态在首条回复前就闪烁。
+
 ## v0.4.2 修复：生成中状态两头都不对
 
 - **ZCode 正在输出却不闪烁**：轮次表 `turn_usage` 只在轮次结束时才写入，状态永远只有 `completed/cancelled/error`，所以旧判定 `status not in (…)` 恒为假 —— 这一行的闪烁其实从来没工作过。现在改看 `message` 表：最新的 assistant 消息没有 `time.completed` 就是在生成中。

@@ -81,6 +81,82 @@ class MonitorTests(unittest.TestCase):
             self.assertEqual(monitor.session_input, 800.0)
             self.assertEqual(monitor.session_cache, 200.0)
 
+    def test_workbuddy_intermediate_assistant_line_keeps_turn_open(self):
+        # 流式期间会写入不带 usage 的中间 assistant 消息（工具调用前），不能据此闭合轮次
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "session.jsonl"
+            rows = [
+                {"type": "message", "role": "user", "timestamp": 1000},
+                {"type": "message", "role": "assistant", "timestamp": 2000},
+                {
+                    "type": "function_call",
+                    "timestamp": 3000,
+                    "message": {"usage": {"output_tokens": 40}},
+                },
+            ]
+            path.write_text(
+                "\n".join(json.dumps(row) for row in rows), encoding="utf-8"
+            )
+            monitor = m.WorkBuddyMonitor()
+            monitor._parse(path)
+            self.assertTrue(monitor.in_progress)
+            self.assertEqual(monitor.session_tokens, 0.0)
+
+    def test_workbuddy_final_assistant_message_closes_turn(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "session.jsonl"
+            rows = [
+                {"type": "message", "role": "user", "timestamp": 1000},
+                {
+                    "type": "function_call",
+                    "timestamp": 2000,
+                    "message": {"usage": {"output_tokens": 40}},
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "timestamp": 3000,
+                    "message": {"usage": {"output_tokens": 60}},
+                },
+            ]
+            path.write_text(
+                "\n".join(json.dumps(row) for row in rows), encoding="utf-8"
+            )
+            monitor = m.WorkBuddyMonitor()
+            monitor._parse(path)
+            self.assertFalse(monitor.in_progress)
+            self.assertEqual(monitor.session_tokens, 100.0)
+
+    def test_workbuddy_working_status_blinks_even_while_waiting(self):
+        # 库里运行中会话的 status 是 "working"；且首条回复尚未产生 usage 时也要闪
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            root = folder / "projects"
+            root.mkdir()
+            (root / "session.jsonl").write_text(
+                json.dumps({"type": "message", "role": "user", "timestamp": 1000}),
+                encoding="utf-8",
+            )
+            db = folder / "workbuddy.db"
+            conn = sqlite3.connect(db)
+            conn.execute(
+                "create table sessions(status text, last_activity_at integer)"
+            )
+            conn.execute(
+                "insert into sessions values('working', ?)", (m.now_ms() - 1000,)
+            )
+            conn.commit()
+            conn.close()
+
+            old_root, old_db = m.WORKBUDDY_ROOT, m.WORKBUDDY_DB
+            m.WORKBUDDY_ROOT = root
+            m.WORKBUDDY_DB = db
+            try:
+                reading = m.WorkBuddyMonitor().poll()
+            finally:
+                m.WORKBUDDY_ROOT, m.WORKBUDDY_DB = old_root, old_db
+            self.assertTrue(reading.generating)
+
     def test_qoder_ide_tokens_and_title(self):
         with tempfile.TemporaryDirectory() as folder:
             db = Path(folder) / "local.db"

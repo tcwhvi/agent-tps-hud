@@ -979,7 +979,6 @@ class WorkBuddyMonitor:
         self.active = False
         self.note = ""
         self.in_progress = False
-        self.waiting_for_output = False
         self.history_values = []
         self.session_tps = None
         self.session_tokens = 0.0
@@ -1007,7 +1006,6 @@ class WorkBuddyMonitor:
         self.active = False
         self.history_values = []
         self.in_progress = False
-        self.waiting_for_output = False
         self.session_tokens = 0.0
         self.session_input = 0.0
         self.session_cache = 0.0
@@ -1098,13 +1096,13 @@ class WorkBuddyMonitor:
                         current["model_ms"] += ts - anchor
                         current["calls"] += 1
                         current["last_ts"] = ts
-                        if typ == "message" and obj.get("role") == "assistant":
+                    if typ == "message" and obj.get("role") == "assistant":
+                        # Only final messages carry usage; intermediate ones
+                        # written before a tool call must not close the turn.
+                        if current and output:
                             current["complete"] = True
+                        if ts:
                             last_final_ts = ts
-                    elif typ == "message" and obj.get("role") == "assistant" and ts:
-                        if current:
-                            current["complete"] = True
-                        last_final_ts = ts
         except Exception:
             pass
 
@@ -1146,7 +1144,6 @@ class WorkBuddyMonitor:
         self.in_progress = bool(
             current and not current["complete"] and current["calls"] > 0
         )
-        self.waiting_for_output = bool(current and current["calls"] == 0)
         if last_event_ts and (now_ms() - last_event_ts) < 5000:
             self.active = True
 
@@ -1228,20 +1225,22 @@ class WorkBuddyMonitor:
             self._parse(path)
 
         generating = False
-        if not self.waiting_for_output:
+        try:
+            conn = open_ro(WORKBUDDY_DB)
             try:
-                conn = open_ro(WORKBUDDY_DB)
-                try:
-                    row = conn.execute(
-                        "select status,last_activity_at from sessions "
-                        "order by last_activity_at desc limit 1"
-                    ).fetchone()
-                finally:
-                    conn.close()
-                if row and row[0] == "active" and (now_ms() - row[1]) < GENERATING_STALE_MS:
-                    generating = True
-            except Exception:
-                pass
+                row = conn.execute(
+                    "select status,last_activity_at from sessions "
+                    "order by last_activity_at desc limit 1"
+                ).fetchone()
+            finally:
+                conn.close()
+            # WorkBuddy marks a running session "working", not "active".
+            if row and row[0] in ("working", "active") and (
+                now_ms() - row[1]
+            ) < GENERATING_STALE_MS:
+                generating = True
+        except Exception:
+            pass
         try:
             if (
                 self.in_progress
@@ -1300,6 +1299,44 @@ class ZCodeMonitor:
                 )
         return values
 
+    @staticmethod
+    def _assistant_rows(conn, session_id) -> list:
+        # Tool results are user-role rows written after the assistant message,
+        # so a newest-5 window over all roles can push the open message out.
+        rows = conn.execute(
+            "select id, data, time_updated from message "
+            "where session_id=? order by time_created desc limit 40",
+            (session_id,),
+        ).fetchall()
+        assistant = []
+        for message_id, data, updated in rows:
+            parsed = jload(data) or {}
+            if parsed.get("role") != "assistant":
+                continue
+            assistant.append((message_id, data, updated or 0))
+            if len(assistant) >= 5:
+                break
+        if not assistant:
+            return []
+        part_latest = {}
+        try:
+            ids = [message_id for message_id, _data, _updated in assistant]
+            placeholders = ",".join("?" for _ in ids)
+            part_latest = dict(
+                conn.execute(
+                    "select message_id, max(time_updated) from part "
+                    f"where message_id in ({placeholders}) group by message_id",
+                    ids,
+                ).fetchall()
+            )
+        except sqlite3.OperationalError:
+            # Older dbs have no part table; message time still works.
+            pass
+        return [
+            (data, max(updated, part_latest.get(message_id) or 0))
+            for message_id, data, updated in assistant
+        ]
+
     def poll(self) -> Reading:
         if not ZCODE_DB.exists():
             return Reading("ZCode", None, "每轮", note="未找到 db.sqlite")
@@ -1319,17 +1356,7 @@ class ZCodeMonitor:
                     "from turn_usage where session_id=? order by started_at",
                     (session_id,),
                 ).fetchall()
-                assistant_rows = [
-                    (data, max(updated or 0, part_updated or 0))
-                    for data, updated, part_updated in conn.execute(
-                        "select m.data, m.time_updated, "
-                        "(select max(time_updated) from part p "
-                        " where p.message_id = m.id) "
-                        "from message m where m.session_id=? "
-                        "order by m.time_created desc limit 5",
-                        (session_id,),
-                    ).fetchall()
-                ]
+                assistant_rows = self._assistant_rows(conn, session_id)
                 by_turn = {}
                 turn_ids = [turn[0] for turn in turns if turn[0]]
                 if turn_ids:
@@ -1507,7 +1534,7 @@ def once() -> None:
         print(json.dumps(r.__dict__, ensure_ascii=False))
 
 
-APP_VERSION = "0.4.2"
+APP_VERSION = "0.4.3"
 BG = "#0f1117"
 BORDER = "#2a2f3a"
 TEXT = "#e6e8ee"

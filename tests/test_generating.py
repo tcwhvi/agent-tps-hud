@@ -58,7 +58,7 @@ class FreshnessTests(unittest.TestCase):
         self.assertFalse(m.is_fresh(0, NOW))
 
 
-def zcode_db(message_rows, part_rows=()):
+def zcode_db(message_rows, part_rows=(), with_part_table=True):
     """message_rows: [(id, time_updated, data_json)] newest turn already closed."""
     import sqlite3
 
@@ -78,10 +78,11 @@ def zcode_db(message_rows, part_rows=()):
         "create table message(id text, session_id text, time_created integer, "
         "time_updated integer, data text)"
     )
-    conn.execute(
-        "create table part(id text, message_id text, session_id text, "
-        "time_created integer, time_updated integer, data text)"
-    )
+    if with_part_table:
+        conn.execute(
+            "create table part(id text, message_id text, session_id text, "
+            "time_created integer, time_updated integer, data text)"
+        )
     conn.execute(
         "insert into turn_usage values('t1','s1','completed',1000,2000,1000,100,0,1)"
     )
@@ -106,8 +107,8 @@ def zcode_db(message_rows, part_rows=()):
 
 
 class ZcodeGeneratingWiringTests(unittest.TestCase):
-    def poll_with(self, message_rows, part_rows=()):
-        holder, db = zcode_db(message_rows, part_rows)
+    def poll_with(self, message_rows, part_rows=(), with_part_table=True):
+        holder, db = zcode_db(message_rows, part_rows, with_part_table)
         old = m.ZCODE_DB
         m.ZCODE_DB = db
         try:
@@ -120,6 +121,26 @@ class ZcodeGeneratingWiringTests(unittest.TestCase):
         now = m.now_ms()
         data = json.dumps({"role": "assistant", "time": {"created": now - 4000}})
         reading = self.poll_with([("x1", now - 1000, data)])
+        self.assertTrue(reading.generating)
+
+    def test_tool_results_cannot_push_open_assistant_out_of_window(self):
+        # 工具结果也是 user 角色消息行：连续 7 条也不能把打开中的 assistant 挤出窗口
+        now = m.now_ms()
+        data = json.dumps({"role": "assistant", "time": {"created": now - 60000}})
+        rows = [
+            (f"u{i}", now - 1000 + i, json.dumps({"role": "user"}))
+            for i in range(7)
+        ]
+        reading = self.poll_with([("x1", now - 1000, data)] + rows)
+        self.assertTrue(reading.generating)
+
+    def test_missing_part_table_still_reports_generating(self):
+        now = m.now_ms()
+        data = json.dumps({"role": "assistant", "time": {"created": now - 4000}})
+        reading = self.poll_with(
+            [("x1", now - 1000, data)], with_part_table=False
+        )
+        self.assertNotIn("读取失败", reading.note)
         self.assertTrue(reading.generating)
 
     def test_abandoned_open_message_stops_blinking(self):

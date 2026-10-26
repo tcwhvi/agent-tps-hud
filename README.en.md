@@ -73,7 +73,7 @@ python tps_overlay.py --once
 - Drag anywhere to move.
 - Short left-click or right-click opens the stats popup; press and drag still moves the HUD.
 - While generating, the number keeps the previous turn's TPS and blinks slowly instead of showing “generating”.
-- The generating state is inferred from local session writes: ZCode and MiMo only write their turn table when a turn ends, so we look for an assistant message that has not been completed. A message left open by a client that exited mid-turn stops blinking after 120 seconds.
+- The generating state is inferred from local session writes: ZCode and MiMo only write their turn table when a turn ends, so we look for an assistant message that has not been completed (tool-result rows cannot push it out of the candidate window); WorkBuddy uses the `sessions` table's `status = working` plus the in-progress state of its transcript. A message left open by a client that exited mid-turn stops blinking after 120 seconds.
 - Drop within 14px of a screen edge to hide, leaving a 5px accent strip.
 - Hover the strip to expand; move away for 0.6s to hide again.
 - Every expand and hide is checked against the real window position, so a geometry request that the OS silently drops is re-issued instead of leaving the HUD stuck.
