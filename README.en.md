@@ -72,7 +72,7 @@ python tps_overlay.py --once
 
 - Drag anywhere to move.
 - Short left-click or right-click opens the stats popup; press and drag still moves the HUD.
-- While generating, the number keeps the previous turn's TPS and blinks slowly instead of showing “generating”.
+- While generating, the number keeps the previous turn's TPS and blinks slowly; the words "generating" never appear. When there is no usable number yet (e.g. the very first request of a session) the row shows a blinking `—`.
 - The generating state means "this session, including the subagents it spawned, wrote something within the last 120 seconds and has not closed the current turn". ZCode and MiMo only write their turn table when a turn ends, so trusting it would read idle forever; WorkBuddy uses the `sessions` table's `status = working` plus the in-progress state of its transcript. A client that exits mid-turn stops blinking after 120 seconds.
 - Drop within 14px of a screen edge to hide, leaving a 5px accent strip.
 - Hover the strip to expand; move away for 0.6s to hide again.

@@ -1537,7 +1537,7 @@ def once() -> None:
         print(json.dumps(r.__dict__, ensure_ascii=False))
 
 
-APP_VERSION = "0.4.4"
+APP_VERSION = "0.4.5"
 BG = "#0f1117"
 BORDER = "#2a2f3a"
 TEXT = "#e6e8ee"
@@ -1870,19 +1870,15 @@ class Overlay:
             display_tps = values[-1] if values else r.tps
 
             if display_tps is None:
-                if r.generating:
-                    row["tps"].config(
-                        text="生成中",
-                        font=("Microsoft YaHei UI", 8, "bold"),
-                    )
-                    color = YELLOW
-                else:
-                    row["tps"].config(
-                        text="—",
-                        fg=SUBTLE,
-                        font=("Consolas", 11, "bold"),
-                    )
-                    color = "#4b5263"
+                # No number yet (e.g. a first turn still in flight). The rule
+                # is that the words never come back: show a dash and let it
+                # blink while the client is working.
+                row["tps"].config(
+                    text="—",
+                    fg=SUBTLE if not r.generating else YELLOW,
+                    font=("Consolas", 11, "bold"),
+                )
+                color = YELLOW if r.generating else "#4b5263"
             else:
                 if display_tps < 100:
                     value = f"{display_tps:.1f}"

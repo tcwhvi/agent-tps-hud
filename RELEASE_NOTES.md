@@ -5,6 +5,10 @@ Windows 10/11。下载 `agent-tps-hud.exe` 双击运行，不需要安装 Python
 
 Win10/11 only. Download `agent-tps-hud.exe` and double-click — no Python needed. The binary is unsigned (individual projects can't get a code-signing certificate), so SmartScreen warns once. The source is in this repo.
 
+## v0.4.5 修复：界面上又出现"生成中"三个字
+
+v0.4.4 让主会话在只编排子代理、自己一轮没收尾时正确进入"生成中"，但那条路径没有可用数字，于是走进了一个遗留的文字分支，界面上重新显示出"生成中"。现在这条分支删掉：没有数字就显示 `—` 并让它闪烁，任何情况下都不再出现文字。
+
 ## v0.4.4 修复：子代理在跑时主会话不闪 / 跟错会话
 
 - **跟错会话**：ZCode 那一行原来取 `turn_usage` 里最新的 session。轮次表只在轮次结束时才写入，而子代理收尾极频繁，结果这一行跟的是某个 `sess_subagent_*`，不是你正在看的主会话。现在按"主会话 + 其全部子代理"的合并活动挑最新的顶层会话（`parent_id is null`）。
