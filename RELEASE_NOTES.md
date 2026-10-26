@@ -5,6 +5,12 @@ Windows 10/11。下载 `agent-tps-hud.exe` 双击运行，不需要安装 Python
 
 Win10/11 only. Download `agent-tps-hud.exe` and double-click — no Python needed. The binary is unsigned (individual projects can't get a code-signing certificate), so SmartScreen warns once. The source is in this repo.
 
+## v0.4.6 新增：主会话只派活时，按子代理合并出数
+
+主会话如果全程在编排子代理、自己一轮都还没收尾，之前那一行只会闪 `—`（因为 TPS 只按已完成轮次统计，而它没有）。现在这种情况把它名下的子代理当一个任务合并：Σ 子代理输出 token / Σ 子代理模型耗时，曲线按每个已收尾的子代理轮取点。主会话一旦收了自己的轮，就只算它自己的，子代理重新排除在外，不会污染它自己的读数。
+
+实测：一个只派活的主会话（自己 0 轮、10 个子代理）合并后 63.7 TPS、58 轮 / 624 次调用、曲线满 24 点。
+
 ## v0.4.5 修复：界面上又出现"生成中"三个字
 
 v0.4.4 让主会话在只编排子代理、自己一轮没收尾时正确进入"生成中"，但那条路径没有可用数字，于是走进了一个遗留的文字分支，界面上重新显示出"生成中"。现在这条分支删掉：没有数字就显示 `—` 并让它闪烁，任何情况下都不再出现文字。

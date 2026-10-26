@@ -1282,13 +1282,6 @@ class ZCodeMonitor:
         return values
 
     @staticmethod
-    def _root_ids(conn, session_id) -> list:
-        return [row[0] for row in conn.execute(
-            "select id from session where id=? or parent_id=?",
-            (session_id, session_id),
-        ).fetchall()]
-
-    @staticmethod
     def _active_root(conn):
         """Newest top-level session, counting its subagents' writes as its own.
 
@@ -1311,10 +1304,38 @@ class ZCodeMonitor:
                 return root
         return None
 
-    def _live_activity(self, conn, session_id) -> int:
+    @staticmethod
+    def _turn_rows(conn, session_ids) -> list:
+        if not session_ids:
+            return []
+        placeholders = ",".join("?" for _ in session_ids)
+        return conn.execute(
+            "select turn_id,status,started_at,completed_at,duration_ms,"
+            f"output_tokens,reasoning_tokens,model_request_count "
+            f"from turn_usage where session_id in ({placeholders}) order by started_at",
+            session_ids,
+        ).fetchall()
+
+    @staticmethod
+    def _descendants(conn, session_id) -> list:
+        return [
+            row[0]
+            for row in conn.execute(
+                "select id from session where parent_id=?", (session_id,)
+            ).fetchall()
+        ]
+
+    @staticmethod
+    def _live_activity(conn, session_id) -> int:
         """Newest write across the session and all of its subagent sessions."""
 
-        ids = self._root_ids(conn, session_id)
+        ids = [
+            row[0]
+            for row in conn.execute(
+                "select id from session where id=? or parent_id=?",
+                (session_id, session_id),
+            ).fetchall()
+        ]
         if not ids:
             return 0
         placeholders = ",".join("?" for _ in ids)
@@ -1347,12 +1368,13 @@ class ZCodeMonitor:
                     "select max(completed_at) from turn_usage where session_id=?",
                     (session_id,),
                 ).fetchone()[0] or 0
-                turns = conn.execute(
-                    "select turn_id,status,started_at,completed_at,duration_ms,"
-                    "output_tokens,reasoning_tokens,model_request_count "
-                    "from turn_usage where session_id=? order by started_at",
-                    (session_id,),
-                ).fetchall()
+                scope = [session_id]
+                turns = self._turn_rows(conn, scope)
+                if not turns:
+                    # A main session that only orchestrates subagents closes no
+                    # turn of its own; fall back to reading them as one task.
+                    scope = self._descendants(conn, session_id)
+                    turns = self._turn_rows(conn, scope)
                 by_turn = {}
                 turn_ids = [turn[0] for turn in turns if turn[0]]
                 if turn_ids:
@@ -1537,7 +1559,7 @@ def once() -> None:
         print(json.dumps(r.__dict__, ensure_ascii=False))
 
 
-APP_VERSION = "0.4.5"
+APP_VERSION = "0.4.6"
 BG = "#0f1117"
 BORDER = "#2a2f3a"
 TEXT = "#e6e8ee"

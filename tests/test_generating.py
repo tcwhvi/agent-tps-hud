@@ -151,6 +151,45 @@ class ZcodeGeneratingTests(unittest.TestCase):
         self.assertEqual(reading.session_key, "main")
         self.assertIsNone(reading.tps)
 
+    def test_orchestrating_main_session_merges_subagent_turns(self):
+        # 主会话只派活、自己一轮没收尾：把子代理当一个任务合并出数
+        now = m.now_ms()
+        reading = self.poll(
+            sessions=[("main", None), ("sub1", "main"), ("sub2", "main")],
+            turns=[
+                ("t2", "sub1", "completed", now - 6000, now - 4000),
+                ("t3", "sub2", "completed", now - 4000, now - 2500),
+            ],
+            messages=[
+                ("m1", "main", now - 1000, "assistant", None),
+                ("m2", "sub1", now - 4000, "assistant", now - 4000),
+                ("m3", "sub2", now - 2500, "assistant", now - 2500),
+            ],
+            model_rows=[("t2", "m2", 2000, 200), ("t3", "m3", 1500, 300)],
+        )
+        self.assertEqual(reading.session_key, "main")
+        self.assertEqual(reading.history, (100.0, 200.0))
+        # 合并口径：(200+300) token / (2.0+1.5)s
+        self.assertAlmostEqual(reading.tps, 500 / 3.5, places=3)
+        self.assertTrue(reading.generating)
+
+    def test_main_session_with_own_turns_ignores_subagents(self):
+        now = m.now_ms()
+        reading = self.poll(
+            sessions=[("main", None), ("sub1", "main")],
+            turns=[
+                ("t1", "main", "completed", now - 9000, now - 8000),
+                ("t2", "sub1", "completed", now - 6000, now - 4000),
+            ],
+            messages=[
+                ("m1", "main", now - 8000, "assistant", now - 8000),
+                ("m2", "sub1", now - 4000, "assistant", now - 4000),
+            ],
+            model_rows=[("t1", "m1", 2000, 100), ("t2", "m2", 500, 9000)],
+        )
+        self.assertAlmostEqual(reading.tps, 50.0, places=3)
+        self.assertEqual(reading.history, (50.0,))
+
     def test_stalled_everything_stops_blinking(self):
         now = m.now_ms()
         stale = now - m.GENERATING_STALE_MS - 5000

@@ -109,7 +109,7 @@ Short left-click or right-click the HUD to inspect historical sessions:
 - Windows only; edge hiding uses the primary monitor work area.
 - Local formats may change between client versions.
 - Each HUD row tracks one session: ZCode uses the newest **top-level** session (writes by its subagents count as it still working) and Qoder uses the newest transcript, so when a client has several sessions When several sessions coexist (for example the CN and international Qoder running side by side), the one with the latest activity owns the row, while the sparkline still keeps the earlier session's points.
-- A main session that only orchestrates subagents and has not closed a turn of its own shows `—`, because TPS is currently computed from completed turns only.
+- A main session that only orchestrates subagents and has not closed a turn of its own is measured by merging its subagents as one task (summed subagent output tokens / summed subagent model time) instead of showing a blank. Once the main session closes a turn of its own, only its own turns count and subagents are excluded again.
 - Not affiliated with ZCode, Qoder, WorkBuddy, MiMo or their vendors.
 
 ## License
