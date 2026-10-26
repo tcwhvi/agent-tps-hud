@@ -31,6 +31,8 @@ class MonitorTests(unittest.TestCase):
                 "create table part(id text, message_id text, session_id text, "
                 "time_created integer, time_updated integer, data text)"
             )
+            conn.execute("create table session(id text primary key, parent_id text)")
+            conn.execute("insert into session values('s1',null)")
             conn.execute(
                 "insert into turn_usage values('t1','s1','completed',1000,2000,1000,100,0,1)"
             )

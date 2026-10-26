@@ -73,7 +73,7 @@ python tps_overlay.py --once
 - Drag anywhere to move.
 - Short left-click or right-click opens the stats popup; press and drag still moves the HUD.
 - While generating, the number keeps the previous turn's TPS and blinks slowly instead of showing “generating”.
-- The generating state is inferred from local session writes: ZCode and MiMo only write their turn table when a turn ends, so we look for an assistant message that has not been completed (tool-result rows cannot push it out of the candidate window); WorkBuddy uses the `sessions` table's `status = working` plus the in-progress state of its transcript. A message left open by a client that exited mid-turn stops blinking after 120 seconds.
+- The generating state means "this session, including the subagents it spawned, wrote something within the last 120 seconds and has not closed the current turn". ZCode and MiMo only write their turn table when a turn ends, so trusting it would read idle forever; WorkBuddy uses the `sessions` table's `status = working` plus the in-progress state of its transcript. A client that exits mid-turn stops blinking after 120 seconds.
 - Drop within 14px of a screen edge to hide, leaving a 5px accent strip.
 - Hover the strip to expand; move away for 0.6s to hide again.
 - Every expand and hide is checked against the real window position, so a geometry request that the OS silently drops is re-issued instead of leaving the HUD stuck.
@@ -108,7 +108,8 @@ Short left-click or right-click the HUD to inspect historical sessions:
 
 - Windows only; edge hiding uses the primary monitor work area.
 - Local formats may change between client versions.
-- Each row reflects the currently most active session of that client. When several sessions coexist (for example the CN and international Qoder running side by side), the one with the latest activity owns the row, while the sparkline still keeps the earlier session's points.
+- Each HUD row tracks one session: ZCode uses the newest **top-level** session (writes by its subagents count as it still working) and Qoder uses the newest transcript, so when a client has several sessions When several sessions coexist (for example the CN and international Qoder running side by side), the one with the latest activity owns the row, while the sparkline still keeps the earlier session's points.
+- A main session that only orchestrates subagents and has not closed a turn of its own shows `—`, because TPS is currently computed from completed turns only.
 - Not affiliated with ZCode, Qoder, WorkBuddy, MiMo or their vendors.
 
 ## License

@@ -5,6 +5,13 @@ Windows 10/11。下载 `agent-tps-hud.exe` 双击运行，不需要安装 Python
 
 Win10/11 only. Download `agent-tps-hud.exe` and double-click — no Python needed. The binary is unsigned (individual projects can't get a code-signing certificate), so SmartScreen warns once. The source is in this repo.
 
+## v0.4.4 修复：子代理在跑时主会话不闪 / 跟错会话
+
+- **跟错会话**：ZCode 那一行原来取 `turn_usage` 里最新的 session。轮次表只在轮次结束时才写入，而子代理收尾极频繁，结果这一行跟的是某个 `sess_subagent_*`，不是你正在看的主会话。现在按"主会话 + 其全部子代理"的合并活动挑最新的顶层会话（`parent_id is null`）。
+- **主代理派活等待时不闪**：主会话在等子代理时可能几分钟不写一行，v0.4.2 的 120 秒新鲜度只看它自己，于是判成已停。现在生成中 = 该会话及其子代理在 120 秒内还有写入，且这一轮还没收尾（不再依赖"有没有未完成的 assistant 消息"）。
+- **首轮在跑时参数错位**：ZCode "暂无完成的轮次"那条返回值少传一个位置参数，`generating` 被塞进了 `active`，导致主会话第一轮在跑时永远不闪。改成关键字参数并带上 `session_key`。
+- 已知：主会话如果只在编排子代理、自己一轮都没收尾，这一行的数字仍是 `—`（TPS 目前只按已完成轮次统计）。
+
 ## v0.4.3 修复：WorkBuddy 生成中不闪烁、ZCode 长工具链闪烁中断
 
 - **WorkBuddy 正在输出却不闪烁**：两条闪烁信号此前同时失效。运行中的会话在 `sessions` 表里的状态是 `working`，代码只认 `active`，数据库信号永远为假；流式期间 jsonl 还会写入不带 usage 的中间 assistant 消息（工具调用前的输出），任何 assistant 行都会把轮次标记成已完成，文件侧的"进行中"信号也随之失效。现在按 `working` 判定（兼容 `active`），并且只有带 usage 的最终消息才闭合轮次；首条回复尚未产生 usage 时也会闪。

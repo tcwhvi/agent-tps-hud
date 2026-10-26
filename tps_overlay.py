@@ -65,24 +65,6 @@ def is_fresh(timestamp_ms, now: int) -> bool:
     return bool(timestamp_ms) and (now - int(timestamp_ms)) < GENERATING_STALE_MS
 
 
-def assistant_in_flight(rows, now: int) -> bool:
-    """True while the newest assistant message still lacks time.completed.
-
-    ZCode and MiMo write usage rows only when a turn ends, so the sole live
-    signal is the open assistant message; a client that exits mid-turn leaves
-    one open forever, hence the freshness bound.
-    """
-
-    for data, updated in rows:
-        parsed = jload(data) or {}
-        if parsed.get("role") != "assistant":
-            continue
-        if (parsed.get("time") or {}).get("completed"):
-            return False
-        return is_fresh(updated, now)
-    return False
-
-
 SNAPSHOT_DIRS = []
 
 
@@ -1300,63 +1282,77 @@ class ZCodeMonitor:
         return values
 
     @staticmethod
-    def _assistant_rows(conn, session_id) -> list:
-        # Tool results are user-role rows written after the assistant message,
-        # so a newest-5 window over all roles can push the open message out.
+    def _root_ids(conn, session_id) -> list:
+        return [row[0] for row in conn.execute(
+            "select id from session where id=? or parent_id=?",
+            (session_id, session_id),
+        ).fetchall()]
+
+    @staticmethod
+    def _active_root(conn):
+        """Newest top-level session, counting its subagents' writes as its own.
+
+        turn_usage only gets a row when a turn ends and subagents close turns
+        constantly, so ordering by turn_usage lands on a subagent while the
+        main session — quiet while it waits on children — is never examined.
+        """
+
         rows = conn.execute(
-            "select id, data, time_updated from message "
-            "where session_id=? order by time_created desc limit 40",
-            (session_id,),
+            "select coalesce(s.parent_id, s.id) as root, max(m.time_updated) "
+            "from message m join session s on s.id = m.session_id "
+            "group by root order by 2 desc limit 8"
         ).fetchall()
-        assistant = []
-        for message_id, data, updated in rows:
-            parsed = jload(data) or {}
-            if parsed.get("role") != "assistant":
+        for root, _activity in rows:
+            if not root:
                 continue
-            assistant.append((message_id, data, updated or 0))
-            if len(assistant) >= 5:
-                break
-        if not assistant:
-            return []
-        part_latest = {}
-        try:
-            ids = [message_id for message_id, _data, _updated in assistant]
-            placeholders = ",".join("?" for _ in ids)
-            part_latest = dict(
-                conn.execute(
-                    "select message_id, max(time_updated) from part "
-                    f"where message_id in ({placeholders}) group by message_id",
-                    ids,
-                ).fetchall()
-            )
-        except sqlite3.OperationalError:
-            # Older dbs have no part table; message time still works.
-            pass
-        return [
-            (data, max(updated, part_latest.get(message_id) or 0))
-            for message_id, data, updated in assistant
-        ]
+            if conn.execute(
+                "select 1 from session where id=? and parent_id is null", (root,)
+            ).fetchone():
+                return root
+        return None
+
+    def _live_activity(self, conn, session_id) -> int:
+        """Newest write across the session and all of its subagent sessions."""
+
+        ids = self._root_ids(conn, session_id)
+        if not ids:
+            return 0
+        placeholders = ",".join("?" for _ in ids)
+        value = conn.execute(
+            f"select max(time_updated) from ("
+            f"select time_updated from message where session_id in ({placeholders}) "
+            f"union all "
+            f"select time_updated from part where session_id in ({placeholders})"
+            f")",
+            [*ids, *ids],
+        ).fetchone()[0]
+        return int(value or 0)
 
     def poll(self) -> Reading:
         if not ZCODE_DB.exists():
             return Reading("ZCode", None, "每轮", note="未找到 db.sqlite")
-        assistant_rows = []
         try:
             conn = open_ro(ZCODE_DB)
             try:
-                session_row = conn.execute(
-                    "select session_id from turn_usage order by started_at desc limit 1"
-                ).fetchone()
-                if not session_row:
-                    return Reading("ZCode", None, "每轮", note="暂无会话")
-                session_id = session_row[0]
+                session_id = self._active_root(conn)
+                if not session_id:
+                    row = conn.execute(
+                        "select session_id from turn_usage order by started_at desc limit 1"
+                    ).fetchone()
+                    if not row:
+                        return Reading("ZCode", None, "每轮", note="暂无会话")
+                    session_id = row[0]
+                live_ms = self._live_activity(conn, session_id)
+                last_closed = conn.execute(
+                    "select max(completed_at) from turn_usage where session_id=?",
+                    (session_id,),
+                ).fetchone()[0] or 0
                 turns = conn.execute(
                     "select turn_id,status,started_at,completed_at,duration_ms,"
                     "output_tokens,reasoning_tokens,model_request_count "
                     "from turn_usage where session_id=? order by started_at",
                     (session_id,),
                 ).fetchall()
-                assistant_rows = self._assistant_rows(conn, session_id)
                 by_turn = {}
                 turn_ids = [turn[0] for turn in turns if turn[0]]
                 if turn_ids:
@@ -1401,7 +1397,7 @@ class ZCodeMonitor:
                 session_calls += calls or 0
                 session_turns += 1
 
-        generating = assistant_in_flight(assistant_rows, now_ms())
+        generating = bool(live_ms) and live_ms > last_closed and is_fresh(live_ms, now_ms())
         if session_ms > 0:
             session_tps = session_tokens / (session_ms / 1000.0)
             return Reading(
@@ -1416,7 +1412,14 @@ class ZCodeMonitor:
                 session_key=str(session_id),
                 history=tuple(history[-24:]),
             )
-        return Reading("ZCode", None, "每轮", "", generating, "暂无完成的轮次")
+        return Reading(
+            "ZCode",
+            None,
+            "每轮",
+            note="暂无完成的轮次",
+            generating=generating,
+            session_key=str(session_id),
+        )
 
     def session_stats(self, since_ms: int) -> list[SessionStat]:
         if not ZCODE_DB.exists():
@@ -1534,7 +1537,7 @@ def once() -> None:
         print(json.dumps(r.__dict__, ensure_ascii=False))
 
 
-APP_VERSION = "0.4.3"
+APP_VERSION = "0.4.4"
 BG = "#0f1117"
 BORDER = "#2a2f3a"
 TEXT = "#e6e8ee"

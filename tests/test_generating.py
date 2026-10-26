@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -10,47 +11,6 @@ import tps_overlay as m
 NOW = 1_793_012_400_000
 
 
-def msg(role, completed=None, created=NOW - 5000, finish=None):
-    time = {"created": created}
-    if completed:
-        time["completed"] = completed
-    return json.dumps({"role": role, "time": time, "finish": finish})
-
-
-class AssistantInFlightTests(unittest.TestCase):
-    def test_assistant_without_completed_and_recent_is_generating(self):
-        rows = [(msg("assistant"), NOW - 3000)]
-        self.assertTrue(m.assistant_in_flight(rows, NOW))
-
-    def test_completed_assistant_is_not_generating(self):
-        rows = [(msg("assistant", completed=NOW - 4000), NOW - 4000)]
-        self.assertFalse(m.assistant_in_flight(rows, NOW))
-
-    def test_stalled_assistant_stops_blinking(self):
-        # 客户端中途退出：assistant 永远不会有 completed，靠新鲜度兜底
-        rows = [(msg("assistant"), NOW - m.GENERATING_STALE_MS - 1000)]
-        self.assertFalse(m.assistant_in_flight(rows, NOW))
-
-    def test_newest_user_message_looks_at_previous_assistant(self):
-        rows = [
-            (msg("user"), NOW - 1000),
-            (msg("assistant", completed=NOW - 2000), NOW - 2000),
-        ]
-        self.assertFalse(m.assistant_in_flight(rows, NOW))
-        rows = [
-            (msg("user"), NOW - 1000),
-            (msg("assistant"), NOW - 2000),
-        ]
-        self.assertTrue(m.assistant_in_flight(rows, NOW))
-
-    def test_no_messages_is_not_generating(self):
-        self.assertFalse(m.assistant_in_flight([], NOW))
-
-    def test_malformed_row_is_ignored(self):
-        rows = [("not json", NOW - 1000), (msg("assistant"), NOW - 2000)]
-        self.assertTrue(m.assistant_in_flight(rows, NOW))
-
-
 class FreshnessTests(unittest.TestCase):
     def test_is_fresh_boundary(self):
         self.assertTrue(m.is_fresh(NOW - m.GENERATING_STALE_MS + 1, NOW))
@@ -58,13 +18,16 @@ class FreshnessTests(unittest.TestCase):
         self.assertFalse(m.is_fresh(0, NOW))
 
 
-def zcode_db(message_rows, part_rows=(), with_part_table=True):
-    """message_rows: [(id, time_updated, data_json)] newest turn already closed."""
-    import sqlite3
-
+def build_db(sessions, turns, messages, parts=(), model_rows=()):
+    """sessions: [(id, parent_id)]  turns: [(id, session, status, started, completed)]
+    messages: [(id, session, time_updated, role, completed)]  parts: [(id, msg, session, t)]
+    model_rows: [(turn_id, message_id, duration_ms, output_tokens)]"""
     holder = tempfile.TemporaryDirectory()
     db = Path(holder.name) / "zcode.sqlite"
     conn = sqlite3.connect(db)
+    conn.execute(
+        "create table session(id text primary key, parent_id text, title text)"
+    )
     conn.execute(
         "create table turn_usage(turn_id text, session_id text, status text, "
         "started_at integer, completed_at integer, duration_ms integer, "
@@ -78,37 +41,43 @@ def zcode_db(message_rows, part_rows=(), with_part_table=True):
         "create table message(id text, session_id text, time_created integer, "
         "time_updated integer, data text)"
     )
-    if with_part_table:
-        conn.execute(
-            "create table part(id text, message_id text, session_id text, "
-            "time_created integer, time_updated integer, data text)"
-        )
     conn.execute(
-        "insert into turn_usage values('t1','s1','completed',1000,2000,1000,100,0,1)"
+        "create table part(id text, message_id text, session_id text, "
+        "time_created integer, time_updated integer, data text)"
     )
-    conn.execute("insert into model_usage values('t1','m1',1000,100,'completed')")
-    conn.execute(
-        "insert into message values('m1','s1',1000,2000,?)",
-        (json.dumps({"role": "assistant", "time": {"created": 1000, "completed": 2000},
-                     "tokens": {"output": 80}}),),
-    )
-    for mid, updated, data in message_rows:
+    for sid, parent in sessions:
+        conn.execute("insert into session values(?,?,?)", (sid, parent, sid))
+    for turn_id, session, status, started, completed in turns:
         conn.execute(
-            "insert into message values(?,'s1',?,?,?)", (mid, updated - 1000, updated, data)
+            "insert into turn_usage values(?,?,?,?,?,100,0,0,1)",
+            (turn_id, session, status, started, completed),
         )
-    for pid, message_id, updated in part_rows:
+    for mid, session, updated, role, completed in messages:
+        data = {"role": role, "time": {"created": updated - 1000}}
+        if completed:
+            data["time"]["completed"] = completed
         conn.execute(
-            "insert into part values(?,?,'s1',?,?,?)",
-            (pid, message_id, updated - 500, updated, json.dumps({"type": "text"})),
+            "insert into message values(?,?,?,?,?)",
+            (mid, session, updated - 1000, updated, json.dumps(data)),
+        )
+    for pid, mid, session, updated in parts:
+        conn.execute(
+            "insert into part values(?,?,?,?,?,?)",
+            (pid, mid, session, updated - 500, updated, json.dumps({"type": "text"})),
+        )
+    for turn_id, message_id, duration, output in model_rows:
+        conn.execute(
+            "insert into model_usage values(?,?,?,?, 'completed')",
+            (turn_id, message_id, duration, output),
         )
     conn.commit()
     conn.close()
     return holder, db
 
 
-class ZcodeGeneratingWiringTests(unittest.TestCase):
-    def poll_with(self, message_rows, part_rows=(), with_part_table=True):
-        holder, db = zcode_db(message_rows, part_rows, with_part_table)
+class ZcodeGeneratingTests(unittest.TestCase):
+    def poll(self, sessions, turns, messages, parts=(), model_rows=()):
+        holder, db = build_db(sessions, turns, messages, parts, model_rows)
         old = m.ZCODE_DB
         m.ZCODE_DB = db
         try:
@@ -117,52 +86,91 @@ class ZcodeGeneratingWiringTests(unittest.TestCase):
             m.ZCODE_DB = old
             holder.cleanup()
 
-    def test_open_assistant_message_recently_updated_blinks(self):
+    def test_open_turn_on_main_session_blinks(self):
         now = m.now_ms()
-        data = json.dumps({"role": "assistant", "time": {"created": now - 4000}})
-        reading = self.poll_with([("x1", now - 1000, data)])
-        self.assertTrue(reading.generating)
-
-    def test_tool_results_cannot_push_open_assistant_out_of_window(self):
-        # 工具结果也是 user 角色消息行：连续 7 条也不能把打开中的 assistant 挤出窗口
-        now = m.now_ms()
-        data = json.dumps({"role": "assistant", "time": {"created": now - 60000}})
-        rows = [
-            (f"u{i}", now - 1000 + i, json.dumps({"role": "user"}))
-            for i in range(7)
-        ]
-        reading = self.poll_with([("x1", now - 1000, data)] + rows)
-        self.assertTrue(reading.generating)
-
-    def test_missing_part_table_still_reports_generating(self):
-        now = m.now_ms()
-        data = json.dumps({"role": "assistant", "time": {"created": now - 4000}})
-        reading = self.poll_with(
-            [("x1", now - 1000, data)], with_part_table=False
+        reading = self.poll(
+            sessions=[("main", None)],
+            turns=[("t1", "main", "completed", now - 9000, now - 8000)],
+            messages=[("m1", "main", now - 1000, "assistant", None)],
         )
-        self.assertNotIn("读取失败", reading.note)
         self.assertTrue(reading.generating)
+        self.assertEqual(reading.session_key, "main")
 
-    def test_abandoned_open_message_stops_blinking(self):
+    def test_closed_turn_with_nothing_newer_does_not_blink(self):
+        now = m.now_ms()
+        reading = self.poll(
+            sessions=[("main", None)],
+            turns=[("t1", "main", "completed", now - 9000, now - 1000)],
+            messages=[("m1", "main", now - 1000, "assistant", now - 1000)],
+        )
+        self.assertFalse(reading.generating)
+
+    def test_subagent_activity_keeps_main_session_blinking(self):
+        # 主会话 300 秒没写，子代理刚写 —— 主代理在派活等待，仍算生成中
+        now = m.now_ms()
+        reading = self.poll(
+            sessions=[("main", None), ("sub1", "main")],
+            turns=[("t1", "main", "completed", now - 400_000, now - 300_000)],
+            messages=[
+                ("m1", "main", now - 300_000, "assistant", None),
+                ("m2", "sub1", now - 3000, "assistant", None),
+            ],
+        )
+        self.assertTrue(reading.generating)
+        self.assertEqual(reading.session_key, "main")
+
+    def test_row_follows_main_session_not_the_newest_subagent(self):
+        # 子代理不停收尾，turn_usage 最新行属于子代理；读数必须跟主会话
+        now = m.now_ms()
+        reading = self.poll(
+            sessions=[("main", None), ("sub1", "main")],
+            turns=[
+                ("t1", "main", "completed", now - 50_000, now - 40_000),
+                ("t2", "sub1", "completed", now - 5000, now - 2000),
+            ],
+            messages=[
+                ("m1", "main", now - 40_000, "assistant", now - 40_000),
+                ("m2", "sub1", now - 2000, "assistant", now - 2000),
+            ],
+            model_rows=[("t1", "m1", 2000, 200), ("t2", "m2", 500, 5000)],
+        )
+        self.assertEqual(reading.session_key, "main")
+        self.assertIn("1 turns", reading.note)
+        # 主会话这一轮 200 token / 2s = 100 TPS；子代理的 5000 token 不算进来
+        self.assertAlmostEqual(reading.tps, 100.0, places=3)
+
+    def test_first_turn_in_flight_still_blinks(self):
+        # 主会话还没有任何已完成轮次，走的是"暂无完成的轮次"分支
+        now = m.now_ms()
+        reading = self.poll(
+            sessions=[("main", None)],
+            turns=[],
+            messages=[("m1", "main", now - 1000, "assistant", None)],
+        )
+        self.assertTrue(reading.generating)
+        self.assertEqual(reading.session_key, "main")
+        self.assertIsNone(reading.tps)
+
+    def test_stalled_everything_stops_blinking(self):
         now = m.now_ms()
         stale = now - m.GENERATING_STALE_MS - 5000
-        data = json.dumps({"role": "assistant", "time": {"created": stale}})
-        reading = self.poll_with([("x1", stale, data)])
+        reading = self.poll(
+            sessions=[("main", None), ("sub1", "main")],
+            turns=[("t1", "main", "completed", stale - 1000, stale)],
+            messages=[("m1", "main", stale, "assistant", None)],
+        )
         self.assertFalse(reading.generating)
 
-    def test_long_turn_keeps_blinking_via_parts(self):
-        # 消息行创建后 time_updated 就不动了，长回答靠 part 推进
+    def test_part_write_keeps_long_model_request_blinking(self):
+        # 单次模型请求很久：消息行时间不动，靠 part 推进
         now = m.now_ms()
-        created = now - m.GENERATING_STALE_MS - 5000
-        data = json.dumps({"role": "assistant", "time": {"created": created}})
-        reading = self.poll_with(
-            [("x1", created, data)], [("p1", "x1", now - 5000)]
+        reading = self.poll(
+            sessions=[("main", None)],
+            turns=[("t1", "main", "completed", now - 400_000, now - 390_000)],
+            messages=[("m1", "main", now - 200_000, "assistant", None)],
+            parts=[("p1", "m1", "main", now - 5000)],
         )
         self.assertTrue(reading.generating)
-
-    def test_closed_turn_is_not_generating(self):
-        reading = self.poll_with([])
-        self.assertFalse(reading.generating)
 
 
 if __name__ == "__main__":
