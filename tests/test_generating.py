@@ -119,25 +119,26 @@ class ZcodeGeneratingTests(unittest.TestCase):
         self.assertTrue(reading.generating)
         self.assertEqual(reading.session_key, "main")
 
-    def test_row_follows_main_session_not_the_newest_subagent(self):
-        # 子代理不停收尾，turn_usage 最新行属于子代理；读数必须跟主会话
+    def test_row_is_one_task_merged_from_main_and_subagents(self):
+        # 一行 = 一个任务：主会话 + 其子代理合并，但身份仍是顶层会话
         now = m.now_ms()
         reading = self.poll(
             sessions=[("main", None), ("sub1", "main")],
             turns=[
-                ("t1", "main", "completed", now - 50_000, now - 40_000),
-                ("t2", "sub1", "completed", now - 5000, now - 2000),
+                ("t1", "main", "completed", now - 5000, now - 3000),
+                ("t2", "sub1", "completed", now - 3000, now - 2000),
             ],
             messages=[
-                ("m1", "main", now - 40_000, "assistant", now - 40_000),
+                ("m1", "main", now - 3000, "assistant", now - 3000),
                 ("m2", "sub1", now - 2000, "assistant", now - 2000),
             ],
-            model_rows=[("t1", "m1", 2000, 200), ("t2", "m2", 500, 5000)],
+            model_rows=[("t1", "m1", 2000, 200), ("t2", "m2", 1000, 100)],
         )
         self.assertEqual(reading.session_key, "main")
-        self.assertIn("1 turns", reading.note)
-        # 主会话这一轮 200 token / 2s = 100 TPS；子代理的 5000 token 不算进来
+        self.assertIn("2 turns", reading.note)
+        # (200+100) token / (2.0+1.0)s
         self.assertAlmostEqual(reading.tps, 100.0, places=3)
+        self.assertEqual(reading.history, (100.0, 100.0))
 
     def test_first_turn_in_flight_still_blinks(self):
         # 主会话还没有任何已完成轮次，走的是"暂无完成的轮次"分支
@@ -173,20 +174,22 @@ class ZcodeGeneratingTests(unittest.TestCase):
         self.assertAlmostEqual(reading.tps, 500 / 3.5, places=3)
         self.assertTrue(reading.generating)
 
-    def test_main_session_with_own_turns_ignores_subagents(self):
+    def test_other_tasks_subagents_stay_out(self):
+        # 只合并本任务的孩子；别的任务的子代理不能混进来
         now = m.now_ms()
         reading = self.poll(
-            sessions=[("main", None), ("sub1", "main")],
+            sessions=[("main", None), ("sub1", "main"), ("other", None), ("thief", "other")],
             turns=[
                 ("t1", "main", "completed", now - 9000, now - 8000),
-                ("t2", "sub1", "completed", now - 6000, now - 4000),
+                ("t2", "thief", "completed", now - 40_000, now - 39_000),
             ],
             messages=[
                 ("m1", "main", now - 8000, "assistant", now - 8000),
-                ("m2", "sub1", now - 4000, "assistant", now - 4000),
+                ("m2", "thief", now - 39_000, "assistant", now - 39_000),
             ],
             model_rows=[("t1", "m1", 2000, 100), ("t2", "m2", 500, 9000)],
         )
+        self.assertEqual(reading.session_key, "main")
         self.assertAlmostEqual(reading.tps, 50.0, places=3)
         self.assertEqual(reading.history, (50.0,))
 

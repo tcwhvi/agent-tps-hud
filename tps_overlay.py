@@ -207,6 +207,7 @@ class SessionStat:
     approximate: bool = False
     input_tokens: float = 0.0
     cache_tokens: float = 0.0
+    subagents: int = 0
 
     @property
     def tps(self) -> Optional[float]:
@@ -513,9 +514,11 @@ class QoderMonitor:
         self.last_event_type = None
         self.sample_key = ""
         self.history_values = []
+        self.turn_points = []
         self.session_tokens = 0.0
         self.session_ms = 0
         self.session_calls = 0
+        self.session_turns = 0
         self.session_start = 0
         self.session_end = 0
         self.session_title = ""
@@ -714,6 +717,7 @@ class QoderMonitor:
         session_start = 0
         session_end = 0
         latest_prompt = prompts[-1] if prompts else None
+        points = []
         for prompt in sorted(turns):
             turn = turns[prompt]
             closed = turn["last_stop"] == "end_turn" or prompt != latest_prompt
@@ -722,6 +726,7 @@ class QoderMonitor:
             tps = turn["tokens"] / (turn["model_ms"] / 1000.0)
             if 0 < tps < 2000:
                 history.append(tps)
+                points.append((prompt, tps))
                 session_tokens += turn["tokens"]
                 session_ms += turn["model_ms"]
                 session_calls += turn["calls"]
@@ -752,11 +757,80 @@ class QoderMonitor:
             )
             self.sample_key = str(path)
             self.history_values = history
+            self.turn_points = points
             self.session_tokens = session_tokens
             self.session_ms = session_ms
             self.session_calls = session_calls
+            self.session_turns = session_turns
             self.session_start = session_start
             self.session_end = session_end
+        self._fold_subagents(path)
+
+    @staticmethod
+    def _family_files(path: Path) -> list:
+        folder = path.with_suffix("") / "subagents"
+        try:
+            return [p for p in sorted(folder.glob("*.jsonl")) if p.is_file()]
+        except OSError:
+            return []
+
+    @classmethod
+    def _family_mtime_ms(cls, path: Path) -> int:
+        times = []
+        for item in [path, *cls._family_files(path)]:
+            try:
+                times.append(int(item.stat().st_mtime * 1000))
+            except OSError:
+                continue
+        return max(times) if times else 0
+
+    def _fold_subagents(self, path: Path) -> None:
+        """One row = one task: merge this session's subagent transcripts in.
+
+        A main session that only orchestrates subagents closes no turn of its
+        own, so without this the row reads blank while the task is running.
+        """
+
+        points = list(self.turn_points)
+        generating = bool(self.generating)
+        tokens = self.session_tokens
+        model_ms = self.session_ms
+        calls = self.session_calls
+        turns = self.session_turns
+        start = self.session_start
+        end = self.session_end
+        for child in self._family_files(path):
+            extra = QoderMonitor()
+            try:
+                extra._parse(child)
+            except Exception:
+                continue
+            generating = generating or bool(extra.generating)
+            if not extra.session_ms:
+                continue
+            points += list(extra.turn_points)
+            tokens += extra.session_tokens
+            model_ms += extra.session_ms
+            calls += extra.session_calls
+            turns += extra.session_turns
+            if extra.session_start:
+                start = min(start or extra.session_start, extra.session_start)
+            end = max(end, extra.session_end)
+        self.turn_points = points
+        self.generating = generating
+        self.history_values = [tps for _prompt, tps in sorted(points)]
+        self.session_tokens = tokens
+        self.session_ms = model_ms
+        self.session_calls = calls
+        self.session_turns = turns
+        self.session_start = start
+        self.session_end = end
+        if model_ms > 0:
+            self.latest_tps = tokens / (model_ms / 1000.0)
+            self.note = (
+                f"≈{int(tokens)} tok / {model_ms / 1000:.1f}s · "
+                f"{turns} turns / {calls} calls"
+            )
 
     @staticmethod
     def _ide_usage(value) -> tuple:
@@ -916,17 +990,18 @@ class QoderMonitor:
             return Reading("Qoder", None, "每次", note="未找到 Qoder 会话")
         try:
             mtime_ns = path.stat().st_mtime_ns
-            mtime_ms = int(path.stat().st_mtime * 1000)
         except OSError:
             return Reading("Qoder", None, "每次", note="读取失败")
-        if self.cache_path != path or self.cache_mtime != mtime_ns:
+        mtime_ms = self._family_mtime_ms(path)
+        family_ns = mtime_ms * 1_000_000
+        if self.cache_path != path or self.cache_mtime != family_ns:
             self.cache_path = path
-            self.cache_mtime = mtime_ns
+            self.cache_mtime = family_ns
             self._parse(path)
 
         generating = bool(
             getattr(self, "generating", False)
-            and (now_ms() - mtime_ms) < 600000
+            and (now_ms() - mtime_ms) < GENERATING_STALE_MS
         )
 
         if self.latest_tps is not None:
@@ -983,10 +1058,71 @@ class WorkBuddyMonitor:
             return None
         return max(files, key=lambda p: p.stat().st_mtime)
 
+    @staticmethod
+    def _family_files(path: Path) -> list:
+        folder = path.with_suffix("") / "subagents"
+        try:
+            return [p for p in sorted(folder.glob("*.jsonl")) if p.is_file()]
+        except OSError:
+            return []
+
+    @classmethod
+    def _family_mtime_ms(cls, path: Path) -> int:
+        times = []
+        for item in [path, *cls._family_files(path)]:
+            try:
+                times.append(int(item.stat().st_mtime * 1000))
+            except OSError:
+                continue
+        return max(times) if times else 0
+
+    def _fold_subagents(self, path: Path) -> None:
+        """One row = one task: merge this session's subagent transcripts in."""
+
+        points = list(self.turn_points)
+        tokens = self.session_tokens
+        model_ms = self.session_ms
+        calls = self.session_calls
+        gen_input = self.session_input
+        gen_cache = self.session_cache
+        end = self.session_end
+        in_progress = bool(self.in_progress)
+        for child in self._family_files(path):
+            extra = WorkBuddyMonitor()
+            try:
+                extra._parse(child)
+            except Exception:
+                continue
+            points += list(extra.turn_points)
+            tokens += extra.session_tokens
+            model_ms += extra.session_ms
+            calls += extra.session_calls
+            gen_input += extra.session_input
+            gen_cache += extra.session_cache
+            end = max(end, extra.session_end)
+            in_progress = in_progress or bool(extra.in_progress)
+        self.turn_points = points
+        self.session_input = gen_input
+        self.session_cache = gen_cache
+        self.session_end = end
+        self.in_progress = in_progress
+        if model_ms > 0:
+            self.history_values = [tps for _ts, tps in sorted(points)]
+            self.session_tokens = tokens
+            self.session_ms = model_ms
+            self.session_calls = calls
+            self.session_tps = tokens / (model_ms / 1000.0)
+            self.note = (
+                f"{int(tokens)} tok / {model_ms / 1000:.1f}s · "
+                f"{len(points)} turns / {calls} calls"
+            )
+            self.last = (self.session_tps, "", int(sorted(points)[-1][0]))
+
     def _parse(self, path: Path) -> None:
         self.last = None
         self.active = False
         self.history_values = []
+        self.turn_points = []
         self.in_progress = False
         self.session_tokens = 0.0
         self.session_input = 0.0
@@ -1104,6 +1240,7 @@ class WorkBuddyMonitor:
                 )
 
         self.history_values = [turn[0] for turn in turns]
+        self.turn_points = [(turn[1], turn[0]) for turn in turns]
         if turns:
             total_tokens = sum(turn[2] for turn in turns)
             total_ms = sum(turn[3] for turn in turns)
@@ -1128,6 +1265,8 @@ class WorkBuddyMonitor:
         )
         if last_event_ts and (now_ms() - last_event_ts) < 5000:
             self.active = True
+        self._fold_subagents(path)
+
 
     def session_stats(self, since_ms: int) -> list[SessionStat]:
         if not WORKBUDDY_ROOT.exists():
@@ -1226,7 +1365,7 @@ class WorkBuddyMonitor:
         try:
             if (
                 self.in_progress
-                and (now_ms() - int(path.stat().st_mtime * 1000)) < GENERATING_STALE_MS
+                and (now_ms() - self._family_mtime_ms(path)) < GENERATING_STALE_MS
             ):
                 generating = True
         except OSError:
@@ -1368,13 +1507,8 @@ class ZCodeMonitor:
                     "select max(completed_at) from turn_usage where session_id=?",
                     (session_id,),
                 ).fetchone()[0] or 0
-                scope = [session_id]
+                scope = [session_id] + self._descendants(conn, session_id)
                 turns = self._turn_rows(conn, scope)
-                if not turns:
-                    # A main session that only orchestrates subagents closes no
-                    # turn of its own; fall back to reading them as one task.
-                    scope = self._descendants(conn, session_id)
-                    turns = self._turn_rows(conn, scope)
                 by_turn = {}
                 turn_ids = [turn[0] for turn in turns if turn[0]]
                 if turn_ids:
@@ -1455,6 +1589,14 @@ class ZCodeMonitor:
                 "where time_updated>=? order by time_updated desc limit 120",
                 (since_ms,),
             ).fetchall()
+            parent_of = {
+                child: root
+                for child, root in conn.execute(
+                    "select id, coalesce(parent_id, id) from session"
+                ).fetchall()
+                if child != root
+            }
+            titles = {row[0]: row[1] or "" for row in sessions}
             prepared = []
             message_ids = set()
             for sid, title, created, updated in sessions:
@@ -1522,9 +1664,11 @@ class ZCodeMonitor:
                 )
         except Exception:
             return []
+
         finally:
             if conn is not None:
                 conn.close()
+        stats = fold_task_rows(stats, parent_of, titles)
         return stats
 
 
@@ -1559,7 +1703,7 @@ def once() -> None:
         print(json.dumps(r.__dict__, ensure_ascii=False))
 
 
-APP_VERSION = "0.4.6"
+APP_VERSION = "0.5.0"
 BG = "#0f1117"
 BORDER = "#2a2f3a"
 TEXT = "#e6e8ee"
@@ -1600,6 +1744,72 @@ def confirm_geometry(window, target, width: int, height: int):
         return None
     window.geometry(f"{width}x{height}+{target[0]}+{target[1]}")
     return target
+
+
+def fold_task_rows(stats, parent_of, titles):
+    """One row per top-level task; subagent sessions fold into their parent.
+
+    ZCode spawns hundreds of subagent sessions per task, and each one used to
+    occupy its own row, burying the task the user actually ran.
+    """
+
+    groups = {}
+    order = []
+    for row in stats:
+        root = parent_of.get(row.session_id, row.session_id)
+        if root not in groups:
+            groups[root] = {
+                "client": row.client,
+                "own": None,
+                "start": row.start_ms,
+                "end": row.end_ms,
+                "tokens": 0.0,
+                "input": 0.0,
+                "cache": 0.0,
+                "ms": 0,
+                "calls": 0,
+                "subs": 0,
+                "approximate": False,
+            }
+            order.append(root)
+        group = groups[root]
+        group["tokens"] += row.tokens
+        group["input"] += row.input_tokens
+        group["cache"] += row.cache_tokens
+        group["ms"] += row.model_ms
+        group["calls"] += row.calls
+        group["start"] = min(group["start"], row.start_ms)
+        group["end"] = max(group["end"], row.end_ms)
+        group["approximate"] = group["approximate"] or row.approximate
+        if root == row.session_id:
+            group["own"] = row
+        else:
+            group["subs"] += 1
+    folded = []
+    for root in order:
+        group = groups[root]
+        own = group["own"]
+        if own is not None:
+            title = own.title
+        else:
+            title = " ".join((titles.get(root) or "").split()) or f"{group['client']} 任务"
+        folded.append(
+            SessionStat(
+                group["client"],
+                root,
+                title,
+                int(group["start"]),
+                int(group["end"]),
+                group["tokens"],
+                group["ms"],
+                group["calls"],
+                approximate=group["approximate"],
+                input_tokens=group["input"],
+                cache_tokens=group["cache"],
+                subagents=group["subs"],
+            )
+        )
+    return folded
 
 
 class HistoryTrack:
@@ -2330,7 +2540,7 @@ class Overlay:
             else "—"
         )
         self.popup_note.configure(
-            text=f"{min(len(visible), 80)} 个会话 · 更新 {stamp} · Qoder IDE 真值 / CLI 估算"
+            text=f"{min(len(visible), 80)} 个任务 · 更新 {stamp} · Qoder IDE 真值 / CLI 估算"
         )
 
         self._clear_rows()
@@ -2353,6 +2563,7 @@ class Overlay:
                     (fmt_time(item.end_ms), "w", 11, SUBTLE, ("Consolas", 8)),
                     (item.client[0], "w", 2, CLIENT_COLORS[item.client], ("Consolas", 8, "bold")),
                     (self._short_title(item.title), "w", 0, TEXT, ("Microsoft YaHei UI", 8)),
+                    (f"+{item.subagents}" if item.subagents else "", "e", 4, SUBTLE, ("Consolas", 8)),
                     (fmt_tokens(item.tokens), "e", 8, TEXT, ("Consolas", 8)),
                     (fmt_tps(item.tps, item.approximate), "e", 6, GREEN if (item.tps or 0) >= 50 else YELLOW if (item.tps or 0) >= 25 else RED, ("Consolas", 8, "bold")),
                 )

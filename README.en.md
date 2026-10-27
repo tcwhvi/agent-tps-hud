@@ -26,6 +26,8 @@ The HUD itself is 190 × 128:
 
 **One turn** = one user prompt + all model requests and local tool calls until the agent stops.
 
+**One row = one task**: the top-level session merged with every subagent it spawned (tokens, model time and sparkline points are all merged). Subagents run concurrently, but the denominator is the sum of per-request durations rather than wall-clock time, so the merged figure is a duration-weighted average speed and is not inflated by parallelism.
+
 ```text
 TPS = sum(output + thinking tokens) / sum(model request duration)
 ```
@@ -87,7 +89,7 @@ Short left-click or right-click the HUD to inspect historical sessions:
 - Switch between today / 7 days / 30 days.
 - The big number is output tokens (the TPS basis); IN / CACHE show input and cached tokens separately, only for clients that expose provider usage.
 - See overall TPS and session count for the period.
-- List each session's output tokens and TPS by time.
+- List each task's output tokens and TPS by time; a `+N` marker (e.g. `+117`) means the task spawned N subagents whose tokens are already included.
 - Scroll with the wheel or the thin bar on the right; scrolling stops at the top and bottom.
 - Today's data is preloaded at startup, so the first open is usually instant.
 - While open, today's data refreshes silently about every 60 seconds; 7-day / 30-day data refreshes on switching, reopening or clicking `↻`.
