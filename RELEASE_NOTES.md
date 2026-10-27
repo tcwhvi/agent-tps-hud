@@ -5,6 +5,14 @@ Windows 10/11。下载 `agent-tps-hud.exe` 双击运行，不需要安装 Python
 
 Win10/11 only. Download `agent-tps-hud.exe` and double-click — no Python needed. The binary is unsigned (individual projects can't get a code-signing certificate), so SmartScreen warns once. The source is in this repo.
 
+## v0.5.1 修复：WorkBuddy 跑长工具时既不闪也不出现在任务列表
+
+WorkBuddy 在一次长工具调用里，transcript 可以 7 分钟不写一行、`sessions.last_activity_at` 也停在 8 分钟前，只有 `workspace/sessions/<id>/` 还在持续写入。旧的活动时钟只看前两者，于是这个正在干活的会话被判成空闲（不闪），又因为它一轮都还没收尾（`tokens>0 and model_ms>0` 不成立），弹窗里连任务名都不出现。
+
+现在：活动时钟取 `max(transcript, 子代理文件, workspace 会话目录)`；弹窗行改为按 token 数判定，未收尾的轮次也计入 token（TPS 在没有已完成轮次时显示 `—`）。
+
+回归用例：造一个 transcript 和 DB 时间戳都过期、只有 workspace 目录新鲜的会话，断言 `generating=True` 且任务名出现在列表里；把 workspace 时钟去掉后该用例转红。
+
 ## v0.5.0 口径变更：一行 = 一个任务（含子代理）
 
 之前每一行只跟一个会话，子代理完全不算：ZCode 的弹窗被 117 行子代理会话淹掉，你真正的任务只占 1 行；Qoder / WorkBuddy 则直接把子代理的产出漏掉（实测一个任务主会话 3.5MB、其 29 个子代理 9.9MB）。

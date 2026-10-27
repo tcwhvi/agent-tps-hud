@@ -1066,6 +1066,31 @@ class WorkBuddyMonitor:
         except OSError:
             return []
 
+    @staticmethod
+    def _workspace_mtime_ms(session_id: str) -> int:
+        """WorkBuddy keeps writing here during long tool calls while its
+        transcript stays silent, so it is the only busy signal for those turns."""
+
+        folder = WORKBUDDY_ROOT.parent / "workspace" / "sessions" / str(session_id)
+        try:
+            times = [folder.stat().st_mtime]
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    try:
+                        times.append(entry.stat().st_mtime)
+                    except OSError:
+                        continue
+            return int(max(times) * 1000)
+        except OSError:
+            return 0
+
+    @classmethod
+    def _task_mtime_ms(cls, path: Path) -> int:
+        return max(
+            cls._family_mtime_ms(path),
+            cls._workspace_mtime_ms(path.stem),
+        )
+
     @classmethod
     def _family_mtime_ms(cls, path: Path) -> int:
         times = []
@@ -1124,6 +1149,9 @@ class WorkBuddyMonitor:
         self.history_values = []
         self.turn_points = []
         self.in_progress = False
+        self.partial_tokens = 0.0
+        self.partial_input = 0.0
+        self.partial_cache = 0.0
         self.session_tokens = 0.0
         self.session_input = 0.0
         self.session_cache = 0.0
@@ -1263,6 +1291,10 @@ class WorkBuddyMonitor:
         self.in_progress = bool(
             current and not current["complete"] and current["calls"] > 0
         )
+        if current and not current["complete"]:
+            self.partial_tokens = float(current["tokens"])
+            self.partial_input = float(current["input_tokens"])
+            self.partial_cache = float(current["cache_tokens"])
         if last_event_ts and (now_ms() - last_event_ts) < 5000:
             self.active = True
         self._fold_subagents(path)
@@ -1309,7 +1341,8 @@ class WorkBuddyMonitor:
             monitor = WorkBuddyMonitor()
             monitor._parse(path)
             values = []
-            if monitor.session_tokens > 0 and monitor.session_ms > 0:
+            tokens = monitor.session_tokens + monitor.partial_tokens
+            if tokens > 0:
                 title = (meta[0] if meta else "") or "WorkBuddy 会话"
                 start = monitor.session_start or (meta[1] if meta else 0)
                 end = monitor.session_end or (meta[2] if meta else 0)
@@ -1320,11 +1353,11 @@ class WorkBuddyMonitor:
                         title.replace("\n", " "),
                         start,
                         end,
-                        monitor.session_tokens,
+                        tokens,
                         monitor.session_ms,
                         monitor.session_calls,
-                        input_tokens=monitor.session_input,
-                        cache_tokens=monitor.session_cache,
+                        input_tokens=monitor.session_input + monitor.partial_input,
+                        cache_tokens=monitor.session_cache + monitor.partial_cache,
                     )
                 )
             if key[0]:
@@ -1356,8 +1389,9 @@ class WorkBuddyMonitor:
             finally:
                 conn.close()
             # WorkBuddy marks a running session "working", not "active".
+            live_ms = self._task_mtime_ms(path)
             if row and row[0] in ("working", "active") and (
-                now_ms() - row[1]
+                now_ms() - max(row[1], live_ms)
             ) < GENERATING_STALE_MS:
                 generating = True
         except Exception:
@@ -1365,7 +1399,7 @@ class WorkBuddyMonitor:
         try:
             if (
                 self.in_progress
-                and (now_ms() - self._family_mtime_ms(path)) < GENERATING_STALE_MS
+                and (now_ms() - self._task_mtime_ms(path)) < GENERATING_STALE_MS
             ):
                 generating = True
         except OSError:
@@ -1703,7 +1737,7 @@ def once() -> None:
         print(json.dumps(r.__dict__, ensure_ascii=False))
 
 
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.5.1"
 BG = "#0f1117"
 BORDER = "#2a2f3a"
 TEXT = "#e6e8ee"

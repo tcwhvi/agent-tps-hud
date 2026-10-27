@@ -371,5 +371,69 @@ class HistoryTrackTests(unittest.TestCase):
         self.assertEqual(track.points(), [(10.0, False), (20.0, False)])
 
 
+
+class WorkBuddyBusyTests(unittest.TestCase):
+    def test_long_tool_call_keeps_the_row_blinking(self):
+        """Transcript and sessions.last_activity_at both go quiet while a tool
+        runs; only the session workspace directory keeps moving."""
+
+        import json
+        import os
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            projects = root / "projects" / "proj"
+            projects.mkdir(parents=True)
+            sid = "s-1"
+            transcript = projects / f"{sid}.jsonl"
+            old = m.now_ms() - 400_000
+            events = [
+                {"type": "message", "role": "user", "timestamp": old},
+                {
+                    "type": "function_call",
+                    "timestamp": old + 1000,
+                    "message": {"usage": {"output_tokens": 100, "input_tokens": 10}},
+                },
+                {"type": "function_call_result", "timestamp": old + 2000},
+            ]
+            transcript.write_text(chr(10).join(json.dumps(x) for x in events), encoding="utf-8")
+            past = transcript.stat().st_atime - 400
+            os.utime(transcript, (past, past))
+
+            workspace = root / "workspace" / "sessions" / sid
+            workspace.mkdir(parents=True)
+            marker = workspace / "modify_backup"
+            marker.mkdir()
+            (marker / "1.a.txt").write_text("x", encoding="utf-8")
+
+            db = root / "workbuddy.db"
+            conn = sqlite3.connect(db)
+            conn.execute(
+                "create table sessions(id text primary key, title text, custom_title text, "
+                "status text, created_at integer, updated_at integer, last_activity_at integer)"
+            )
+            conn.execute(
+                "insert into sessions values(?,?,?,?,?,?,?)",
+                (sid, "跑长命令", None, "working", old, old, old),
+            )
+            conn.commit()
+            conn.close()
+
+            old_root, old_db = m.WORKBUDDY_ROOT, m.WORKBUDDY_DB
+            m.WORKBUDDY_ROOT = projects.parent
+            m.WORKBUDDY_DB = db
+            try:
+                reading = m.WorkBuddyMonitor().poll()
+                stats = m.WorkBuddyMonitor().session_stats(0)
+            finally:
+                m.WORKBUDDY_ROOT = old_root
+                m.WORKBUDDY_DB = old_db
+
+            self.assertTrue(reading.generating)
+            self.assertEqual([row.title for row in stats], ["跑长命令"])
+            self.assertGreater(stats[0].tokens, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
